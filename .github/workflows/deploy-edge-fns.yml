@@ -47,7 +47,7 @@ jobs:
             dir="supabase/functions/$fn"
             mkdir -p "$dir"
             # copy entrypoint and shared helpers
-            cp "$file" "$dir/index.js"
+            cp "$file" "$dir/index.ts"
             cp utils.js "$dir/utils.js"
 
             echo "Deploying $fn"
