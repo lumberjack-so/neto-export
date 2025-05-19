@@ -18,26 +18,37 @@ const filterData = {
   }
 }
 
-const PAGE_SIZE = 1000
-let page = 1, totalInserted = 0
+serve(async () => {
+  const supabase = initSupabase()
+  try {
+    const PAGE_SIZE = 1000
+    let page = 1, totalInserted = 0
 
-while (true) {
-  const { Item = [] } = await callNetoAPI('GetItem', {
-    Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE }
-  })
-  if (Item.length === 0) break
+    while (true) {
+      const { Item = [] } = await callNetoAPI(endpoint, {
+        Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE }
+      })
 
-  const rows = transformData('GetItem', { Item })
-  const { error, count } = await supabase
-      .from('item')
-      .upsert(rows, { onConflict: 'parent_sku' })
-  if (error) throw error
-  totalInserted += count ?? 0
+      if (Item.length === 0) break
 
-  if (Item.length < PAGE_SIZE) break
-  page++
-}
+      const rows = transformData(endpoint, { Item })
+      const { error, count } = await supabase
+        .from(table)
+        .upsert(rows, { onConflict: conflictColumn })
+      if (error) throw error
+      totalInserted += count ?? 0
 
-return new Response(JSON.stringify({ success: true, inserted: totalInserted }), {
-  headers: { 'Content-Type': 'application/json' }
+      if (Item.length < PAGE_SIZE) break
+      page++
+    }
+
+    return new Response(JSON.stringify({ success: true, inserted: totalInserted }), {
+      headers: { 'Content-Type': 'application/json' }
+    })
+  } catch (err) {
+    return new Response(JSON.stringify({ success: false, error: err.message }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    })
+  }
 }) 
