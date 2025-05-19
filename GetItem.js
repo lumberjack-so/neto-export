@@ -18,14 +18,26 @@ const filterData = {
   }
 }
 
-serve(async () => {
-  const supabase = initSupabase()
-  try {
-    const raw = await callNetoAPI(endpoint, filterData)
-    const rows = transformData(endpoint, raw)
-    const { count } = await upsertData(supabase, table, conflictColumn, rows)
-    return new Response(JSON.stringify({ success: true, inserted: count }), { headers: { 'Content-Type': 'application/json' } })
-  } catch (err) {
-    return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } })
-  }
+const PAGE_SIZE = 1000
+let page = 1, totalInserted = 0
+
+while (true) {
+  const { Item = [] } = await callNetoAPI('GetItem', {
+    Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE }
+  })
+  if (Item.length === 0) break
+
+  const rows = transformData('GetItem', { Item })
+  const { error, count } = await supabase
+      .from('item')
+      .upsert(rows, { onConflict: 'parent_sku' })
+  if (error) throw error
+  totalInserted += count ?? 0
+
+  if (Item.length < PAGE_SIZE) break
+  page++
+}
+
+return new Response(JSON.stringify({ success: true, inserted: totalInserted }), {
+  headers: { 'Content-Type': 'application/json' }
 }) 
