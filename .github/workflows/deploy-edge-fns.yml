@@ -31,19 +31,27 @@ jobs:
       #       NETO_API_KEY=${{ secrets.NETO_API_KEY }} \
       #       --project-ref $PROJECT_REF
 
-      # Deploy every *.js file in repository root as an Edge Function (skip helper files)
-      - name: Deploy Edge Functions (no Docker)
+      # Build CLI-v2 compatible folder structure and deploy
+      - name: Deploy Edge Functions (Supabase CLI v2)
         run: |
+          mkdir -p supabase/functions
+
           for file in *.js; do
             fn=$(basename "$file" .js)
-            # Skip non-function utility modules
+            # Skip shared helpers
             if [ "$fn" = "utils" ]; then
-              echo "Skipping helper file $file"
               continue
             fi
-            echo "Deploying $fn from $file"
+
+            echo "Preparing function $fn"
+            dir="supabase/functions/$fn"
+            mkdir -p "$dir"
+            # copy entrypoint and shared helpers
+            cp "$file" "$dir/index.js"
+            cp utils.js "$dir/utils.js"
+
+            echo "Deploying $fn"
             supabase functions deploy "$fn" \
-              --file "$file" \
               --project-ref "$PROJECT_REF" \
               --use-api
           done
