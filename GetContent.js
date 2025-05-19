@@ -19,8 +19,17 @@ serve(async () => {
   const supabase = initSupabase()
   try {
     const raw = await callNetoAPI(endpoint, filterData)
+    console.log('Neto returned', raw.Customer?.length ?? 0, 'records')
+
     const rows = transformData(endpoint, raw)
-    const { count } = await upsertData(supabase, table, conflictColumn, rows)
+    console.log('Rows to upsert', rows.length)
+
+    const { count } = await supabase
+      .from(table)
+      .upsert(rows, { onConflict: conflictColumn, count: 'exact' })
+      .select()
+    console.log('Rows inserted/updated in Postgres', count)
+
     return new Response(JSON.stringify({ success: true, inserted: count }), { headers: { 'Content-Type': 'application/json' } })
   } catch (err) {
     return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } })
