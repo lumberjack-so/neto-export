@@ -9,7 +9,7 @@ const conflictColumn = 'username'
 const baseFilter = {
   DateAddedFrom: '1900-01-01 00:00:00',
   DateAddedTo:   '2100-01-01 00:00:00',
-  Limit:         100000,
+  Limit:         10000,
   OutputSelector: [
     'Username', 'ID', 'EmailAddress',
     'Active', 'DateAdded', 'DateUpdated'
