@@ -31,10 +31,14 @@ serve(async () => {
 
       if (Item.length === 0) break
 
-      const rows = transformData(endpoint, { Item })
+      const rowsRaw  = transformData(endpoint, { Item })
+      const unique   = Object.values(
+        rowsRaw.reduce((acc, r) => ({ ...acc, [r.parent_sku]: r }), {})
+      )
+
       const { error, count } = await supabase
         .from(table)
-        .upsert(rows, { onConflict: conflictColumn })
+        .upsert(unique, { onConflict: conflictColumn })
       if (error) throw error
       totalInserted += count ?? 0
 
