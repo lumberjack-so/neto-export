@@ -1,0 +1,49 @@
+name: Deploy Edge Functions
+
+on:
+  push:
+    branches: [ main ]         # deploy on every push to main
+  workflow_dispatch:           # allow manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_REF:            ${{ secrets.PROJECT_REF }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # Install the CLI (beta ≥ 2.13.3 supports --use-api)
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.13.3      # or 'latest'
+
+      # OPTIONAL – if you store env vars in Supabase Secrets
+      # Uncomment and add your secrets to GitHub and here.
+      # - name: Sync Supabase Secrets
+      #   run: |
+      #     supabase secrets set \
+      #       NETO_API_KEY=${{ secrets.NETO_API_KEY }} \
+      #       --project-ref $PROJECT_REF
+
+      # Deploy every *.js file in repository root as an Edge Function (skip helper files)
+      - name: Deploy Edge Functions (no Docker)
+        run: |
+          for file in *.js; do
+            fn=$(basename "$file" .js)
+            # Skip non-function utility modules
+            if [ "$fn" = "utils" ]; then
+              echo "Skipping helper file $file"
+              continue
+            fi
+            echo "Deploying $fn from $file"
+            supabase functions deploy "$fn" \
+              --file "$file" \
+              --project-ref "$PROJECT_REF" \
+              --use-api
+          done
