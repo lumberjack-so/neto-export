@@ -98,12 +98,13 @@ export function transformData(endpoint, data) {
         date_updated: c.DateUpdated
       })) || []
     case 'GetCategory':
+      const normalizeDate = (str) => str === '0000-00-00 00:00:00' ? null : str
       return data.Category?.map(cat => ({
         category_id: cat.CategoryID,
         category_name: cat.CategoryName,
         parent_category_id: cat.ParentCategoryID,
-        date_added: cat.DatePosted,
-        date_updated: cat.DateUpdated
+        date_added: normalizeDate(cat.DatePosted),
+        date_updated: normalizeDate(cat.DateUpdated)
       })) || []
     case 'GetVoucher':
       return data.Voucher?.map(v => ({
