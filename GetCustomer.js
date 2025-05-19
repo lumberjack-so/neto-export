@@ -25,20 +25,20 @@ serve(async () => {
     const PAGE_SIZE = 500
 
     while (true) {
-      const { Customer = [] } = await callNetoAPI(endpoint, {
-        Filter: { ...baseFilter, Page: page, Limit: PAGE_SIZE }
-      })
+      const payload = { Filter: { ...baseFilter, Limit: PAGE_SIZE, Page: page } }
+      const resp = await callNetoAPI(endpoint, payload)
 
-      if (Customer.length === 0) break // no more pages
+      const rowsList = resp.Customer ?? []
+      if (rowsList.length === 0) break        // no more pages
 
-      const rows = transformData(endpoint, { Customer })
+      const rows = transformData(endpoint, { Customer: rowsList })
+      const { error, count } = await supabase
+          .from(table)
+          .upsert(rows, { onConflict: conflictColumn })
+      if (error) throw error
+      totalInserted += count ?? 0
 
-      const { count } = await supabase
-        .from(table)
-        .upsert(rows, { onConflict: conflictColumn })
-
-      if (count) totalInserted += count
-
+      if (rowsList.length < PAGE_SIZE) break  // last page (less than full)
       page++
     }
 
