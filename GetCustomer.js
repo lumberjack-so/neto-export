@@ -16,41 +16,41 @@ const baseFilter = {
   ]
 }
 
-async function fetchAllPages () {
-  let page = 1, all = []
-  while (true) {
-    const { Customer = [] } = await callNetoAPI(endpoint, { Filter: { ...baseFilter, Page: page } })
-    if (Customer.length === 0) break          // no more pages
-    all.push(...Customer)
-    page++
-  }
-  return all
-}
-
 serve(async () => {
   const supabase = initSupabase()
 
   try {
-    const netoRows = await fetchAllPages()
-    console.log('Neto returned', netoRows.length, 'records')
+    let page = 1
+    let totalInserted = 0
+    const PAGE_SIZE = 500
 
-    const rows = transformData(endpoint, { Customer: netoRows })
-    console.log('Rows to upsert', rows.length)
+    while (true) {
+      const { Customer = [] } = await callNetoAPI(endpoint, {
+        Filter: { ...baseFilter, Page: page, Limit: PAGE_SIZE }
+      })
 
-    const { count } = await supabase
-      .from(table)
-      .upsert(rows, { onConflict: conflictColumn, count: 'exact' })
-      .select()                                          // needed for count
-    console.log('Rows inserted/updated in Postgres', count)
+      if (Customer.length === 0) break // no more pages
 
-    return new Response(JSON.stringify({ success: true, inserted: count }), {
-      headers: { 'Content-Type': 'application/json' }
-    })
+      const rows = transformData(endpoint, { Customer })
+
+      const { count } = await supabase
+        .from(table)
+        .upsert(rows, { onConflict: conflictColumn })
+
+      if (count) totalInserted += count
+
+      page++
+    }
+
+    return new Response(
+      JSON.stringify({ success: true, inserted: totalInserted }),
+      { headers: { 'Content-Type': 'application/json' } }
+    )
 
   } catch (err) {
-    return new Response(JSON.stringify({ success: false, error: err.message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    })
+    return new Response(
+      JSON.stringify({ success: false, error: err.message }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    )
   }
 }) 
