@@ -54,7 +54,7 @@ git push origin main
 | `GetOrder` | ✅ Working | - | Variable | Ensure unique constraint on order_id |
 | `GetPayment` | ✅ Working | - | Variable | Uses pagination, deduplicates |
 | `GetCategory` | ✅ Working | Zero dates fixed | ~200 categories | Handles MySQL zero dates |
-| `GetContent` | ✅ Working | - | ~200 pages | Fixed limit, no pagination |
+| `GetContent` | ✅ Working | - | ~200 pages | Page + Limit (1000/page) |
 | `GetWarehouse` | ✅ Working | - | ~10 warehouses | Small dataset |
 | `GetRma` | ✅ Working | - | Variable | Returns/refunds data |
 | `GetVoucher` | ❌ Schema mismatch | Missing columns | Variable | Needs date_added, balance columns |
