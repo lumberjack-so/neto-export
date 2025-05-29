@@ -24,20 +24,34 @@ serve(async () => {
     const PAGE_SIZE = 1000
 
     while (true) {
+      console.log(`Fetching orders page ${page} (limit ${PAGE_SIZE})`)
       const { Order = [] } = await callNetoAPI(endpoint, {
         Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE }
       })
-      if (Order.length === 0) break
+      console.log(`Received ${Order.length} orders on page ${page}`)
+      if (Order.length === 0) {
+        console.log('No more orders to fetch, ending pagination')
+        break
+      }
 
       const rows = transformData(endpoint, { Order })
+      console.log(`Transform yielded ${rows.length} rows on page ${page}`)
       const { count } = await upsertData(supabase, table, conflictColumn, rows)
+      console.log(`Upserted ${count ?? 0} orders on page ${page}`)
       totalInserted += count ?? 0
 
-      if (Order.length < PAGE_SIZE) break
+      if (Order.length < PAGE_SIZE) {
+        console.log('Last page reached, terminating pagination')
+        break
+      }
       page++
     }
 
-    return new Response(JSON.stringify({ success: true, inserted: totalInserted }), { headers: { 'Content-Type': 'application/json' } })
+    console.log(`Total orders inserted/updated: ${totalInserted}`)
+    return new Response(
+      JSON.stringify({ success: true, inserted: totalInserted }),
+      { headers: { 'Content-Type': 'application/json' } }
+    )
   } catch (err) {
     return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } })
   }
