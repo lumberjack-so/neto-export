@@ -8,7 +8,6 @@ const conflictColumn = 'supplier_id'
 
 const filterData = {
   Filter: {
-    IsActive: true,
     OutputSelector: [
       'SupplierID',
       'SupplierReference',
@@ -37,29 +36,64 @@ serve(async () => {
   const supabase = initSupabase()
   
   try {
+    // Check if supplier table exists
+    const { error: tableCheckError } = await supabase
+      .from('supplier')
+      .select('supplier_id')
+      .limit(1)
+    
+    if (tableCheckError && tableCheckError.code === '42P01') {
+      // Table doesn't exist
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Supplier table does not exist. Please create it first by running the SQL script in sql/create_supplier_table.sql',
+          hint: 'Go to Supabase Dashboard > SQL Editor and run the create table script'
+        }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+    
     const PAGE_SIZE = 1000
     let page = 1
     let totalInserted = 0
     
     while (true) {
       // Fetch page of suppliers
-      const { Supplier = [] } = await callNetoAPI(endpoint, {
+      console.log(`Fetching suppliers page ${page}...`)
+      const response = await callNetoAPI(endpoint, {
         Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE }
       })
       
-      if (Supplier.length === 0) break
+      console.log('Raw API response:', JSON.stringify(response).substring(0, 500))
+      
+      const { Supplier = [] } = response
+      
+      console.log(`Found ${Supplier.length} suppliers on page ${page}`)
+      
+      if (Supplier.length === 0) {
+        console.log('No more suppliers found, ending pagination')
+        break
+      }
+      
+      // Log first supplier as sample
+      if (Supplier.length > 0) {
+        console.log('Sample supplier:', JSON.stringify(Supplier[0]))
+      }
       
       // Transform data
       const rows = transformData(endpoint, { Supplier })
+      console.log(`Transformed ${rows.length} rows`)
       
       // Deduplicate on supplier_id
       const unique = rows.filter((row, index, self) =>
         index === self.findIndex(r => r.supplier_id === row.supplier_id)
       )
+      console.log(`After deduplication: ${unique.length} unique rows`)
       
       // Upsert to database
-      const count = await upsertData(supabase, table, unique, conflictColumn)
-      totalInserted += count
+      const { count } = await upsertData(supabase, table, conflictColumn, unique)
+      totalInserted += count || 0
       
       console.log(`Page ${page}: processed ${Supplier.length} suppliers, inserted ${count}`)
       
