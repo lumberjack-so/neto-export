@@ -102,14 +102,16 @@ export function transformData(endpoint, data) {
         rma_date: r.DateIssued,
         order_id: r.OrderID
       })) || []
-    case 'GetContent':
+    case 'GetContent': {
+      const normalizeDate = (str) => str === '0000-00-00 00:00:00' ? null : str
       return data.Content?.map(c => ({
         content_id: c.ContentID,
         content_name: c.ContentName,
         content_type: c.ContentType,
-        date_added: c.DatePosted,
-        date_updated: c.DateUpdated
+        date_added: normalizeDate(c.DatePosted),
+        date_updated: normalizeDate(c.DateUpdated)
       })) || []
+    }
     case 'GetCategory':
       const normalizeDate = (str) => str === '0000-00-00 00:00:00' ? null : str
       return data.Category?.map(cat => ({
