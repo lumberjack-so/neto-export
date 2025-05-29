@@ -30,33 +30,36 @@ curl -X POST http://localhost:54321/functions/v1/GetItem
 supabase functions deploy GetItem --project-ref your-project-ref
 
 # Deploy all functions
-./deploy-all.sh
-
-# Or manually
 for file in *.js; do
   fn=$(basename "$file" .js)
   if [ "$fn" != "utils" ]; then
     supabase functions deploy "$fn" --project-ref your-project-ref
   fi
 done
+
+# Deploy via GitHub Actions (recommended)
+git add .
+git commit -m "Update functions"
+git push origin main
 ```
 
 ---
 
 ## 📊 Function Status Overview
 
-| Function | Status | Common Issues | Data Volume |
-|----------|---------|---------------|-------------|
-| `GetItem` | ⚠️ Needs dedup | Duplicate SKUs in batch | ~50k products |
-| `GetCustomer` | ✅ Working | CPU timeout on full sync | ~35k customers |
-| `GetOrder` | ✅ Working | - | Variable |
-| `GetPayment` | ✅ Working | - | Variable |
-| `GetCategory` | ✅ Working | Zero dates fixed | ~200 categories |
-| `GetContent` | ✅ Working | - | ~200 pages |
-| `GetWarehouse` | ✅ Working | - | ~10 warehouses |
-| `GetRma` | ✅ Working | - | Variable |
-| `GetVoucher` | ❌ Schema mismatch | Missing columns | Variable |
-| `GetSupplier` | ✅ Working | - | Variable |
+| Function | Status | Common Issues | Data Volume | Special Notes |
+|----------|---------|---------------|-------------|---------------|
+| `GetItem` | ⚠️ Needs dedup | Duplicate SKUs in batch | ~50k products | May have duplicate parent_sku in single batch |
+| `GetCustomer` | ✅ Working | CPU timeout on full sync | ~35k customers | Uses pagination (500/page) |
+| `GetOrder` | ✅ Working | - | Variable | Ensure unique constraint on order_id |
+| `GetPayment` | ✅ Working | - | Variable | Uses pagination, deduplicates |
+| `GetCategory` | ✅ Working | Zero dates fixed | ~200 categories | Handles MySQL zero dates |
+| `GetContent` | ✅ Working | - | ~200 pages | Fixed limit, no pagination |
+| `GetWarehouse` | ✅ Working | - | ~10 warehouses | Small dataset |
+| `GetRma` | ✅ Working | - | Variable | Returns/refunds data |
+| `GetVoucher` | ❌ Schema mismatch | Missing columns | Variable | Needs date_added, balance columns |
+| `GetSupplier` | ✅ Working | - | Variable | **No Page parameter support** |
+| `global_sync` | ✅ Working | - | - | Orchestrates all functions |
 
 ---
 
@@ -66,7 +69,7 @@ done
 
 **1. Single Function**
 ```
-POST https://your-project.supabase.co/functions/v1/GetItem
+POST https://your-project.supabase.co/functions/v1/GetSupplier
 Headers:
   Authorization: Bearer YOUR_ANON_KEY
   Content-Type: application/json
@@ -82,24 +85,33 @@ Headers:
 
 ### Testing Neto API Directly
 
-**GetCustomer Example:**
+**GetSupplier Example (Working):**
 ```
 POST https://yourdomain.neto.com.au/do/WS/NetoAPI
 Headers:
-  NETOAPI_ACTION: GetCustomer
+  NETOAPI_ACTION: GetSupplier
   NETOAPI_KEY: your-key
-  NETOAPI_USERNAME: your-username
   Accept: application/json
   Content-Type: application/json
 
 Body:
 {
   "Filter": {
-    "Username": ["specific-customer"],
-    "DateAddedFrom": "2024-01-01",
-    "DateAddedTo": "2024-12-31",
+    "Limit": 10000,
+    "OutputSelector": ["SupplierID", "SupplierCompany", "SupplierEmail", ...]
+  }
+}
+```
+⚠️ **Note**: Do NOT include `Page` parameter for GetSupplier!
+
+**GetCustomer Example (With Pagination):**
+```
+Body:
+{
+  "Filter": {
     "Page": 1,
-    "Limit": 100
+    "Limit": 1000,
+    "OutputSelector": ["Username", "EmailAddress", ...]
   }
 }
 ```
@@ -107,6 +119,13 @@ Body:
 ---
 
 ## 🛠️ Common SQL Fixes
+
+### Create All Tables (Fresh Install)
+```sql
+-- Run each table creation script in order:
+-- 1. sql/create_supplier_table_complete.sql
+-- 2. Create other tables as needed
+```
 
 ### Add Missing Constraints
 ```sql
@@ -117,7 +136,7 @@ ALTER TABLE warehouse ADD CONSTRAINT unique_warehouse_id UNIQUE (warehouse_id);
 ALTER TABLE rma ADD CONSTRAINT unique_rma_id UNIQUE (rma_id);
 ALTER TABLE content ADD CONSTRAINT unique_content_id UNIQUE (content_id);
 ALTER TABLE category ADD CONSTRAINT unique_category_id UNIQUE (category_id);
-ALTER TABLE supplier ADD CONSTRAINT unique_supplier_id UNIQUE (supplier_id);
+-- supplier already has PRIMARY KEY on supplier_id
 
 -- Check existing constraints
 SELECT 
@@ -127,22 +146,31 @@ SELECT
 FROM information_schema.table_constraints tc
 JOIN information_schema.key_column_usage kcu 
   ON tc.constraint_name = kcu.constraint_name
-WHERE tc.constraint_type = 'UNIQUE'
+WHERE tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
   AND tc.table_schema = 'public'
 ORDER BY tc.table_name;
 ```
 
-### Add Missing Columns
+### Fix Voucher Table
 ```sql
--- For voucher table
+-- Add missing columns to voucher table
 ALTER TABLE voucher 
 ADD COLUMN IF NOT EXISTS date_added TIMESTAMP,
 ADD COLUMN IF NOT EXISTS balance DECIMAL(10,2);
+```
 
--- Check table structure
-SELECT column_name, data_type, is_nullable
+### Check Table Existence
+```sql
+-- List all tables
+SELECT table_name 
+FROM information_schema.tables 
+WHERE table_schema = 'public' 
+ORDER BY table_name;
+
+-- Check specific table columns
+SELECT column_name, data_type, is_nullable, column_default
 FROM information_schema.columns
-WHERE table_name = 'voucher'
+WHERE table_name = 'supplier'
 ORDER BY ordinal_position;
 ```
 
@@ -152,80 +180,94 @@ ORDER BY ordinal_position;
 
 ### Function Returns Success but 0 Inserts
 
-1. **Check Neto Response**
-   ```javascript
-   // Add logging
-   const response = await callNetoAPI(endpoint, filterData)
-   console.log('Neto returned:', response)
+1. **Check if NETO_API_KEY is set**
+   ```bash
+   # In Supabase Dashboard > Settings > Edge Functions > Secrets
+   # Ensure NETO_API_KEY exists
    ```
 
-2. **Verify Filter Dates**
-   - Neto uses YYYY-MM-DD HH:MM:SS format
-   - Try wider date ranges
+2. **Verify API Response**
+   - Check logs for "Raw API response"
+   - Empty string `"Supplier":""` means no data matched filters
+   - Array `"Supplier":[]` means end of pagination
 
-3. **Check OutputSelector**
-   - Ensure all required fields are requested
-   - Some fields need specific permissions
+3. **Check Filter Parameters**
+   - GetSupplier: NO Page parameter!
+   - GetCustomer/GetOrder/GetPayment: Use Page parameter
+   - Some endpoints need date ranges
 
-### CPU/Memory Timeouts
-
-1. **Reduce Page Size**
-   ```javascript
-   const PAGE_SIZE = 500  // Instead of 1000
+4. **Verify Table Exists**
+   ```sql
+   SELECT EXISTS (
+     SELECT FROM information_schema.tables 
+     WHERE table_name = 'supplier'
+   );
    ```
 
-2. **Add Delays**
-   ```javascript
-   // Between pages
-   await new Promise(resolve => setTimeout(resolve, 100))
-   ```
+### Pagination Quirks by Endpoint
 
-3. **Process in Chunks**
-   ```javascript
-   // Instead of one big upsert
-   for (let i = 0; i < rows.length; i += 100) {
-     const chunk = rows.slice(i, i + 100)
-     await upsertData(supabase, table, chunk, conflictColumn)
-   }
-   ```
+| Endpoint | Supports Page? | Notes |
+|----------|---------------|--------|
+| GetItem | Yes | Use Page + Limit |
+| GetCustomer | Yes | Page starts at 1 |
+| GetOrder | Yes | Use date filters |
+| GetPayment | Yes | Deduplicate results |
+| GetSupplier | **NO** | Use Limit only! |
+| GetCategory | No | Small dataset |
+| GetContent | No | Fixed limit |
 
-### Date Format Issues
+### Common Errors & Solutions
 
-```javascript
-// In utils.js transformData
-const normalizeDate = (dateStr) => {
-  if (!dateStr || dateStr === '0000-00-00 00:00:00') return null
-  // Convert to ISO format
-  return new Date(dateStr).toISOString()
-}
-```
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `"Supplier":""` | No data or wrong filter | Remove Page parameter for GetSupplier |
+| `ON CONFLICT specification` | Missing unique constraint | Add PRIMARY KEY or UNIQUE constraint |
+| `column does not exist` | Schema mismatch | Run migration script |
+| `CPU time exceeded` | Too much data | Reduce PAGE_SIZE or Limit |
+| `0000-00-00 00:00:00` | MySQL zero dates | Already handled in utils.js |
+| `upsertData is not a function` | Wrong parameter order | Fixed in latest version |
 
 ---
 
-## 📝 Adding a New Endpoint Checklist
+## 📝 Quick Fixes
 
-- [ ] Read Neto API docs in `/docs` folder
-- [ ] Create `GetNewEndpoint.js` file
-- [ ] Add transformation case in `utils.js`
-- [ ] Create database table with primary key
-- [ ] Test with small dataset locally
-- [ ] Add to `global_sync.js` ENDPOINTS array
-- [ ] Deploy and test in production
-- [ ] Update documentation
+### Deploy All Functions
+```bash
+# One-liner to deploy everything
+PROJECT_REF=your-ref && for f in Get*.js global_sync.js; do echo "Deploying $f..." && supabase functions deploy "${f%.js}" --project-ref $PROJECT_REF; done
+```
+
+### Check Function Logs
+```bash
+# Recent logs
+supabase functions logs GetSupplier --project-ref your-ref --tail
+
+# Specific time range
+supabase functions logs GetSupplier --project-ref your-ref --since 1h
+```
+
+### Reset Table Data
+```sql
+-- BE CAREFUL - This deletes all data!
+TRUNCATE TABLE supplier RESTART IDENTITY CASCADE;
+
+-- Safer: Delete old data
+DELETE FROM supplier WHERE date_added < NOW() - INTERVAL '90 days';
+```
 
 ---
 
 ## 🔑 Environment Variables Reference
 
-| Variable | Where Used | Example |
-|----------|------------|---------|
-| `SUPABASE_URL` | Edge Functions | `https://abc.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY` | Edge Functions | `eyJ...` (JWT) |
-| `NETO_API_ENDPOINT` | Edge Functions | `https://domain.neto.com.au/do/WS/NetoAPI` |
-| `NETO_API_KEY` | Edge Functions | `XXXXXXXXXXXXXXXX` |
-| `NETO_API_USERNAME` | Edge Functions | Usually same as API key |
-| `SUPABASE_ACCESS_TOKEN` | GitHub Actions | `sbp_...` |
-| `PROJECT_REF` | GitHub Actions | `abcdefghijklmnop` |
+| Variable | Where Used | Example | Required |
+|----------|------------|---------|----------|
+| `SUPABASE_URL` | Edge Functions | `https://abc.supabase.co` | ✅ |
+| `SUPABASE_SERVICE_ROLE_KEY` | Edge Functions | `eyJ...` (JWT) | ✅ |
+| `NETO_API_ENDPOINT` | utils.js (hardcoded) | `https://domain.neto.com.au/do/WS/NetoAPI` | ❌ |
+| `NETO_API_KEY` | Edge Functions | `32-char string` | ✅ |
+| `NETO_API_USERNAME` | Edge Functions | Usually same as API key | ❌ |
+| `SUPABASE_ACCESS_TOKEN` | GitHub Actions | `sbp_...` | ✅ (for CI/CD) |
+| `PROJECT_REF` | GitHub Actions | `20-char string` | ✅ (for CI/CD) |
 
 ---
 
@@ -233,10 +275,12 @@ const normalizeDate = (dateStr) => {
 
 | Function | Records | Time | Memory | Notes |
 |----------|---------|------|---------|-------|
-| GetItem | 1,000 | ~5s | Low | With dedup |
-| GetCustomer | 1,000 | ~8s | Medium | Complex data |
-| GetOrder | 100 | ~3s | Low | Nested objects |
+| GetItem | 1,000 | ~5s | Low | Needs deduplication |
+| GetCustomer | 500/page | ~4s/page | Medium | ~70 pages total |
+| GetOrder | 100 | ~3s | Low | Complex nested data |
+| GetSupplier | All | ~6s | Low | No pagination |
 | GetCategory | All (~200) | ~2s | Low | Small dataset |
+| global_sync | All | ~5min | - | Sequential execution |
 
 ---
 
@@ -244,49 +288,60 @@ const normalizeDate = (dateStr) => {
 
 ### Function Stuck/Hanging
 ```bash
-# Check function logs
-supabase functions logs GetItem --project-ref your-ref
+# Check function status
+supabase functions list --project-ref your-ref
 
-# Restart by redeploying
-supabase functions deploy GetItem --project-ref your-ref
+# Force redeploy
+supabase functions deploy GetSupplier --project-ref your-ref
+
+# Check for errors
+supabase functions logs GetSupplier --project-ref your-ref --tail
 ```
+
+### API Key Compromised
+1. Go to Neto Admin Panel
+2. Regenerate API Key
+3. Update in Supabase: `Settings > Edge Functions > Secrets`
+4. Redeploy all functions
 
 ### Rollback Deployment
 ```bash
-# GitHub Actions keeps history
-# Revert commit and push to trigger redeploy
+# Via GitHub
 git revert HEAD
 git push origin main
+
+# Manual previous version
+git checkout HEAD~1 -- GetSupplier.js
+git commit -m "Revert GetSupplier to previous version"
+git push origin main
 ```
-
-### Clear Bad Data
-```sql
--- BE CAREFUL - This deletes data!
--- Always backup first
-
--- Clear and restart
-TRUNCATE TABLE item RESTART IDENTITY CASCADE;
-
--- Or selective delete
-DELETE FROM orders WHERE order_date < '2024-01-01';
-```
-
----
-
-## 📞 Useful Links
-
-- [Neto API Explorer](https://developers.maropost.com/documentation/engineers/api-documentation/)
-- [Supabase Edge Functions Docs](https://supabase.com/docs/guides/functions)
-- [Project Repository](https://github.com/lumberjack-so/neto-export)
-- [Supabase Dashboard](https://app.supabase.com)
 
 ---
 
 ## 💡 Pro Tips
 
-1. **Always test with `Limit: 10` first**
-2. **Use `DateAddedFrom` to sync incrementally**
-3. **Monitor Supabase dashboard for quota usage**
-4. **Keep utils.js transformations clean and documented**
-5. **Use GitHub Actions logs to debug deployment issues**
-6. **Set up external monitoring (UptimeRobot, etc.) for critical functions** 
+1. **Always check logs first** - Most issues are visible in function logs
+2. **Test with small limits** - Use `Limit: 10` when debugging
+3. **GetSupplier is special** - Remember: NO Page parameter!
+4. **Batch operations** - global_sync can timeout, run individual functions if needed
+5. **Monitor quotas** - Check Supabase dashboard for usage
+6. **Use SQL transactions** - For data consistency when doing manual fixes
+
+---
+
+## 📞 Useful Links
+
+- [Neto API Documentation](https://developers.maropost.com/documentation/engineers/api-documentation/)
+- [Supabase Edge Functions](https://supabase.com/docs/guides/functions)
+- [Project Repository](https://github.com/lumberjack-so/neto-export)
+- [Supabase Dashboard](https://app.supabase.com)
+
+---
+
+## 🎯 Quick Wins
+
+- **GetSupplier working?** Just remove `Page` from the filter!
+- **Need all suppliers?** Set `Limit: 10000` (or higher)
+- **CPU timeout?** Reduce PAGE_SIZE to 500
+- **Duplicate key errors?** Run deduplication before upsert
+- **Missing data?** Check OutputSelector includes all fields 

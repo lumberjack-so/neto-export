@@ -11,9 +11,10 @@
 8. [Deployment Pipeline](#deployment-pipeline)
 9. [Development Workflow](#development-workflow)
 10. [Common Issues & Solutions](#common-issues--solutions)
-11. [Adding New Endpoints](#adding-new-endpoints)
+11. [API Quirks & Special Cases](#api-quirks--special-cases)
 12. [Performance Considerations](#performance-considerations)
 13. [Security & Environment Variables](#security--environment-variables)
+14. [Adding New Endpoints](#adding-new-endpoints)
 
 ---
 
@@ -36,14 +37,16 @@ Neto Export is a **data synchronization system** that continuously pulls e-comme
 - **Rate Limit Management**: Batch operations to respect Neto's API limits.
 - **Data Transformation**: Clean and normalize Neto's sometimes inconsistent data structures.
 - **Decoupling**: Applications can query Supabase without depending on Neto's availability.
+- **Pagination Handling**: Different Neto endpoints have different pagination behaviors.
 
 ### Core Design Principles
 
 1. **Modular Functions**: Each Neto entity (products, customers, orders) has its own Edge Function.
 2. **Shared Utilities**: Common logic (API calls, transformations) lives in `utils.js`.
-3. **Paginated Fetching**: Handle large datasets without hitting memory/CPU limits.
+3. **Flexible Pagination**: Handle different pagination strategies per endpoint.
 4. **Upsert Strategy**: Use PostgreSQL's ON CONFLICT to handle updates gracefully.
 5. **Error Resilience**: Individual function failures don't break the entire sync.
+6. **Comprehensive Logging**: Detailed logging for debugging API issues.
 
 ---
 
@@ -60,7 +63,9 @@ Neto Export is a **data synchronization system** that continuously pulls e-comme
 │ - Customers     │                      │ - GetCustomer.js │
 │ - Orders        │                      │ - GetOrder.js    │
 │ - Payments      │                      │ - GetPayment.js  │
-│ - Categories    │                      │ - (etc...)       │
+│ - Categories    │                      │ - GetCategory.js │
+│ - Suppliers     │                      │ - GetSupplier.js │
+│ - etc...        │                      │ - global_sync.js │
 └─────────────────┘                      └────────┬─────────┘
                                                   │
                                                   │ SQL Upserts
@@ -74,7 +79,8 @@ Neto Export is a **data synchronization system** that continuously pulls e-comme
                                          │ - customer       │
                                          │ - orders         │
                                          │ - payment        │
-                                         │ - (etc...)       │
+                                         │ - supplier       │
+                                         │ - etc...         │
                                          └──────────────────┘
 ```
 
@@ -91,7 +97,7 @@ Neto Export is a **data synchronization system** that continuously pulls e-comme
 │  │GetCustomer.js│ ─────────► │ • callNetoAPI()           │ │
 │  └─────────────┘            │ • transformData()         │ │
 │  ┌─────────────┐            │ • upsertData()            │ │
-│  │ GetOrder.js │ ─────────► │ • normalizeDate()         │ │
+│  │GetSupplier.js│ ─────────► │ • Date normalization      │ │
 │  └─────────────┘            └────────────────────────────┘ │
 │        ...                                                  │
 └─────────────────────────────────────────────────────────────┘
@@ -100,10 +106,10 @@ Neto Export is a **data synchronization system** that continuously pulls e-comme
 ### Why Edge Functions?
 
 1. **Serverless**: No infrastructure to manage, scales automatically.
-2. **Geographic Distribution**: Runs close to your users (though for this use case, it's more about the reliability).
-3. **Built-in Authentication**: Integrates seamlessly with Supabase RLS and auth.
-4. **Cost Effective**: Pay only for execution time.
-5. **Native Deno Runtime**: Modern JavaScript/TypeScript with built-in security.
+2. **Built-in Authentication**: Integrates seamlessly with Supabase RLS and auth.
+3. **Cost Effective**: Pay only for execution time.
+4. **Native Deno Runtime**: Modern JavaScript/TypeScript with built-in security.
+5. **Environment Secrets**: Secure storage for API keys.
 
 ---
 
@@ -126,11 +132,20 @@ External Trigger → Edge Function
 // Each function starts by:
 const supabase = initSupabase()  // Creates authenticated Supabase client
 // Uses env vars: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+
+// Check API key exists
+const apiKey = Deno.env.get('NETO_API_KEY')
+if (!apiKey) {
+  return error response
+}
 ```
 
 #### 3. **Neto API Request**
+
+Different pagination strategies per endpoint:
+
+**Paginated Endpoints (GetCustomer, GetOrder, GetPayment):**
 ```javascript
-// Paginated fetching pattern:
 while (true) {
   const response = await callNetoAPI(endpoint, {
     Filter: {
@@ -139,27 +154,42 @@ while (true) {
       Limit: PAGE_SIZE  // Usually 500-1000
     }
   })
-  // Process batch...
   if (no more data) break
   currentPage++
 }
+```
+
+**Non-Paginated Endpoints (GetSupplier):**
+```javascript
+// GetSupplier doesn't support Page parameter!
+const response = await callNetoAPI(endpoint, {
+  Filter: {
+    Limit: 10000,  // High limit to get all
+    OutputSelector: [...]
+  }
+})
 ```
 
 #### 4. **Data Transformation**
 ```javascript
 // Raw Neto format → Clean database format
 const transformed = transformData('GetItem', netoResponse)
-// Example: {ItemID: "SKU123"} → {parent_sku: "SKU123"}
+// Handles:
+// - Field name mapping
+// - Data type conversions
+// - MySQL zero date normalization
+// - Boolean string conversions
 ```
 
 #### 5. **Database Upsert**
 ```javascript
-const { count, error } = await supabase
-  .from(tableName)
-  .upsert(rows, {
-    onConflict: 'unique_column',  // e.g., 'parent_sku'
-    count: 'exact'
-  })
+// Deduplication (if needed)
+const unique = rows.filter((row, index, self) =>
+  index === self.findIndex(r => r.supplier_id === row.supplier_id)
+)
+
+// Upsert with proper parameter order
+const { count } = await upsertData(supabase, table, conflictColumn, unique)
 ```
 
 #### 6. **Response**
@@ -168,31 +198,10 @@ return new Response(
   JSON.stringify({ 
     success: true, 
     inserted: totalCount,
-    errors: errorList 
+    message: additionalInfo 
   }),
   { headers: { 'Content-Type': 'application/json' } }
 )
-```
-
-### Data Transformation Examples
-
-**Neto Item → Supabase item table:**
-```javascript
-// Neto format
-{
-  "ItemID": "WIDGET-001",
-  "ItemName": "Blue Widget",
-  "RRP": "29.99",
-  "DateAdded": "2024-01-15 10:30:00"
-}
-
-// Transformed to
-{
-  "parent_sku": "WIDGET-001",
-  "item_name": "Blue Widget", 
-  "rrp": 29.99,  // String → Number
-  "date_added": "2024-01-15T10:30:00Z"  // Normalized timestamp
-}
 ```
 
 ---
@@ -220,13 +229,13 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJ...  # Full database access
 
 # Required for Neto API
-NETO_API_ENDPOINT=https://yourdomain.neto.com.au/do/WS/NetoAPI
-NETO_API_KEY=YOUR_NETO_API_KEY
-NETO_API_USERNAME=YOUR_USERNAME  # Often same as key
+NETO_API_KEY=YOUR_NETO_API_KEY  # 32-character key
+# NETO_API_ENDPOINT is hardcoded in utils.js
+# NETO_API_USERNAME not currently used
 
 # Required for GitHub Actions
 SUPABASE_ACCESS_TOKEN=sbp_...  # Personal access token
-PROJECT_REF=your-project-ref
+PROJECT_REF=your-project-ref    # 20-character project ID
 ```
 
 ---
@@ -239,11 +248,10 @@ This is the heart of the system, providing:
 
 #### 1. **Supabase Client Factory**
 ```javascript
-export function initSupabase() {
-  return createClient(
-    Deno.env.get('SUPABASE_URL'),
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
-  )
+export const initSupabase = () => {
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')
+  const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+  return createClient(supabaseUrl, supabaseKey)
 }
 ```
 - Uses service role key for full database access
@@ -252,27 +260,40 @@ export function initSupabase() {
 
 #### 2. **Neto API Wrapper**
 ```javascript
-export async function callNetoAPI(action, body = {}) {
-  const headers = {
-    'NETOAPI_ACTION': action,
-    'NETOAPI_KEY': Deno.env.get('NETO_API_KEY'),
-    'NETOAPI_USERNAME': Deno.env.get('NETO_API_USERNAME'),
-    'Accept': 'application/json',
-    'Content-Type': 'application/json'
-  }
+const NETO_API_URL = 'https://timberbits.com/do/WS/NetoAPI'  // Hardcoded
+const NETO_API_KEY = Deno.env.get('NETO_API_KEY')
+
+export async function callNetoAPI(action, filterData) {
+  // Comprehensive logging for debugging
+  console.log(`Calling Neto API: ${action}`)
+  console.log('Request body:', JSON.stringify(filterData))
   
-  const response = await fetch(endpoint, {
+  const response = await fetch(NETO_API_URL, {
     method: 'POST',
-    headers,
-    body: JSON.stringify(body)
+    headers: {
+      'Content-Type': 'application/json',
+      'NETOAPI_KEY': NETO_API_KEY,
+      'NETOAPI_ACTION': action,
+      'Accept': 'application/json'
+    },
+    body: JSON.stringify(filterData)
   })
   
-  return response.json()
+  // Log response details
+  console.log('Response status:', response.status)
+  
+  if (!response.ok) {
+    const text = await response.text()
+    console.error('API error response:', text)
+    throw new Error(`API call failed (${response.status}): ${text}`)
+  }
+  
+  const jsonResponse = await response.json()
+  console.log('Response JSON preview:', JSON.stringify(jsonResponse).substring(0, 200))
+  
+  return jsonResponse
 }
 ```
-- Handles authentication headers
-- Consistent error handling
-- JSON serialization/deserialization
 
 #### 3. **Data Transformation Engine**
 ```javascript
@@ -280,72 +301,148 @@ export function transformData(endpoint, data) {
   switch(endpoint) {
     case 'GetItem':
       return data.Item?.map(item => ({
-        parent_sku: item.ItemID,
-        item_name: item.ItemName,
-        rrp: parseFloat(item.RRP) || 0,
-        // ... field mappings
+        parent_sku: item.ParentSKU,
+        item_id: item.ID,
+        brand: item.Brand,
+        // Boolean conversions
+        virtual: item.Virtual === 'True',
+        approved: item.Approved === 'True',
+        is_active: item.IsActive === 'True',
+        // JSON serialization for complex fields
+        price_groups: item.PriceGroups ? JSON.stringify(item.PriceGroups) : null,
+        // Direct mappings
+        date_added: item.DateAdded,
+        date_updated: item.DateUpdated
       })) || []
     
-    case 'GetCustomer':
-      // ... customer transformations
+    case 'GetCategory':
+      // Special date handling for MySQL zero dates
+      const normalizeDate = (str) => str === '0000-00-00 00:00:00' ? null : str
+      return data.Category?.map(cat => ({
+        category_id: cat.CategoryID,
+        category_name: cat.CategoryName,
+        parent_category_id: cat.ParentCategoryID,
+        date_added: normalizeDate(cat.DatePosted),
+        date_updated: normalizeDate(cat.DateUpdated)
+      })) || []
+    
+    case 'GetSupplier':
+      console.log('GetSupplier transform - sample data:', data.Supplier?.[0])
+      return data.Supplier?.map(s => ({
+        id: s.ID ? parseInt(s.ID) : null,
+        supplier_id: s.SupplierID,
+        supplier_reference: s.SupplierReference ? parseInt(s.SupplierReference) : null,
+        lead_time_1: s.LeadTime1 ? parseInt(s.LeadTime1) : null,
+        lead_time_2: s.LeadTime2 ? parseInt(s.LeadTime2) : null,
+        // All address fields
+        supplier_name: s.SupplierCompany,
+        contact_street1: s.SupplierStreet1,
+        contact_street2: s.SupplierStreet2,
+        // ... etc
+      })) || []
+    
+    // ... other endpoints
   }
 }
 ```
-- Centralizes all field mappings
-- Handles data type conversions
-- Manages null/undefined values
-- Date normalization (MySQL "0000-00-00" → null)
 
 #### 4. **Upsert Helper**
 ```javascript
-export async function upsertData(supabase, table, rows, conflictColumn) {
-  const { data, error, count } = await supabase
+export async function upsertData(supabase, table, conflictColumn, rows) {
+  if (!rows.length) return { count: 0 }
+  const { error, count } = await supabase
     .from(table)
     .upsert(rows, { 
       onConflict: conflictColumn,
       count: 'exact' 
     })
-  
   if (error) throw error
-  return count || 0
+  return { count }  // Returns object, not just number!
 }
 ```
-- Standardizes database operations
-- Consistent error handling
-- Returns actual insert count
 
 ### Individual Edge Functions
 
-Each function follows this pattern:
-
+#### Standard Pattern (with Pagination)
 ```javascript
-// 1. Import dependencies
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
-import { initSupabase, callNetoAPI, transformData } from './utils.js'
-
-// 2. Define constants
-const endpoint = 'GetItem'
-const table = 'item'
-const conflictColumn = 'parent_sku'
-
-// 3. Define filter/query parameters
-const filterData = {
-  Filter: {
-    IsActive: true,
-    OutputSelector: ['ItemID', 'ItemName', 'RRP', ...]
-  }
-}
-
-// 4. Main handler
+// Example: GetCustomer.js
 serve(async () => {
   const supabase = initSupabase()
+  
   try {
-    // Paginated fetching
-    // Data transformation
-    // Database upsert
-    // Return success response
+    const PAGE_SIZE = 500  // Reduced to avoid CPU timeouts
+    let page = 1
+    let totalInserted = 0
+    
+    while (true) {
+      const response = await callNetoAPI(endpoint, {
+        Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE }
+      })
+      
+      const { Customer = [] } = response
+      if (Customer.length === 0) break
+      
+      const rows = transformData(endpoint, { Customer })
+      const { count } = await upsertData(supabase, table, conflictColumn, rows)
+      totalInserted += count || 0
+      
+      if (Customer.length < PAGE_SIZE) break
+      page++
+    }
+    
+    return new Response(
+      JSON.stringify({ success: true, inserted: totalInserted }),
+      { headers: { 'Content-Type': 'application/json' } }
+    )
   } catch (error) {
-    // Error handling
+    console.error(`${endpoint} error:`, error)
+    return new Response(
+      JSON.stringify({ success: false, error: error.message }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
+})
+```
+
+#### Special Pattern (No Pagination - GetSupplier)
+```javascript
+serve(async () => {
+  const supabase = initSupabase()
+  
+  try {
+    // GetSupplier doesn't support Page parameter!
+    const response = await callNetoAPI(endpoint, filterData)
+    
+    const { Supplier = [] } = response
+    
+    // Handle empty string response
+    let suppliers = []
+    if (Array.isArray(Supplier)) {
+      suppliers = Supplier
+    } else if (Supplier === '' || !Supplier) {
+      suppliers = []
+    }
+    
+    if (suppliers.length === 0) {
+      return new Response(
+        JSON.stringify({ success: true, inserted: 0, message: 'No suppliers found in Neto' }),
+        { headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+    
+    const rows = transformData(endpoint, { Supplier: suppliers })
+    const unique = rows.filter((row, index, self) =>
+      index === self.findIndex(r => r.supplier_id === row.supplier_id)
+    )
+    
+    const { count } = await upsertData(supabase, table, conflictColumn, unique)
+    
+    return new Response(
+      JSON.stringify({ success: true, inserted: count || 0 }),
+      { headers: { 'Content-Type': 'application/json' } }
+    )
+  } catch (error) {
+    // Error handling...
   }
 })
 ```
@@ -356,28 +453,26 @@ serve(async () => {
 
 ### Data Sync Functions
 
-| Function | Neto Endpoint | Supabase Table | Key Field | Special Notes |
-|----------|---------------|----------------|-----------|---------------|
-| `GetItem.js` | GetItem | item | parent_sku | Products catalog, handles variants |
-| `GetCustomer.js` | GetCustomer | customer | username | Large dataset, uses aggressive pagination |
-| `GetOrder.js` | GetOrder | orders | order_id | Complex nested data |
-| `GetPayment.js` | GetPayment | payment | payment_id | Links to orders |
-| `GetCategory.js` | GetCategory | category | category_id | Hierarchical data |
-| `GetContent.js` | GetContent | content | content_id | CMS pages |
-| `GetWarehouse.js` | GetWarehouse | warehouse | warehouse_id | Inventory locations |
-| `GetRma.js` | GetRma | rma | rma_id | Returns/refunds |
-| `GetVoucher.js` | GetVoucher | voucher | voucher_id | Gift cards/store credit |
-| `GetSupplier.js` | GetSupplier | supplier | supplier_id | Vendor/supplier management |
+| Function | Neto Endpoint | Supabase Table | Key Field | Pagination | Special Notes |
+|----------|---------------|----------------|-----------|------------|---------------|
+| `GetItem.js` | GetItem | item | parent_sku | Yes | Needs deduplication logic |
+| `GetCustomer.js` | GetCustomer | customer | username | Yes | ~35k records, 500/page |
+| `GetOrder.js` | GetOrder | orders | order_id | Yes | Complex nested data |
+| `GetPayment.js` | GetPayment | payment | payment_id | Yes | Includes deduplication |
+| `GetCategory.js` | GetCategory | category | category_id | No | Handles MySQL zero dates |
+| `GetContent.js` | GetContent | content | content_id | No | Fixed limit |
+| `GetWarehouse.js` | GetWarehouse | warehouse | warehouse_id | No | Small dataset |
+| `GetRma.js` | GetRma | rma | rma_id | No | Returns/refunds |
+| `GetVoucher.js` | GetVoucher | voucher | voucher_id | No | Schema needs fixing |
+| `GetSupplier.js` | GetSupplier | supplier | supplier_id | **No** | NO Page parameter! |
 
 ### Orchestration Functions
 
-| Function | Purpose | Triggers |
-|----------|---------|----------|
-| `global_sync.js` | Runs all sync functions in sequence | Manual/Scheduled |
+| Function | Purpose | Execution Time | Notes |
+|----------|---------|----------------|-------|
+| `global_sync.js` | Runs all sync functions | ~5 minutes | Sequential execution |
 
 ### Missing/Planned Functions
-
-Based on the Neto API docs in your `/docs` folder:
 
 1. **Shipping Methods** (`GetShippingMethods`) - Shipping options
 2. **Currency Settings** (`GetCurrencySettings`) - Multi-currency support
@@ -387,90 +482,77 @@ Based on the Neto API docs in your `/docs` folder:
 
 ## 7. Database Schema & Constraints
 
-### Required Table Structures
-
-#### item (Products)
+### Complete Supplier Table (Example)
 ```sql
-CREATE TABLE item (
-  parent_sku TEXT PRIMARY KEY,
-  item_name TEXT,
-  rrp DECIMAL(10,2),
-  cost_price DECIMAL(10,2),
-  sell_price DECIMAL(10,2),
-  date_added TIMESTAMP,
-  date_updated TIMESTAMP,
-  is_active BOOLEAN DEFAULT true,
-  description TEXT,
-  weight DECIMAL(10,3),
-  -- ... other fields
-);
-
-CREATE UNIQUE INDEX idx_item_parent_sku ON item(parent_sku);
-```
-
-#### customer
-```sql
-CREATE TABLE customer (
-  username TEXT PRIMARY KEY,
-  email TEXT UNIQUE,
-  first_name TEXT,
-  last_name TEXT,
-  company TEXT,
-  phone TEXT,
-  date_added TIMESTAMP,
-  date_updated TIMESTAMP,
-  is_active BOOLEAN DEFAULT true,
-  -- ... other fields
-);
-
-CREATE UNIQUE INDEX idx_customer_username ON customer(username);
-CREATE INDEX idx_customer_email ON customer(email);
-```
-
-#### orders
-```sql
-CREATE TABLE orders (
-  order_id TEXT PRIMARY KEY,
-  customer_username TEXT REFERENCES customer(username),
-  order_date TIMESTAMP,
-  order_status TEXT,
-  grand_total DECIMAL(10,2),
-  shipping_total DECIMAL(10,2),
-  tax_total DECIMAL(10,2),
-  -- ... other fields
-);
-
-CREATE UNIQUE INDEX idx_orders_order_id ON orders(order_id);
-CREATE INDEX idx_orders_customer ON orders(customer_username);
-CREATE INDEX idx_orders_date ON orders(order_date);
-```
-
-#### supplier
-```sql
-CREATE TABLE supplier (
+CREATE TABLE IF NOT EXISTS supplier (
+  -- Primary keys
+  id INTEGER,
   supplier_id TEXT PRIMARY KEY,
+  
+  -- Basic information
   supplier_reference INTEGER,
   supplier_name TEXT NOT NULL,
+  
+  -- Lead times
+  lead_time_1 INTEGER,
+  lead_time_2 INTEGER,
+  
+  -- Contact address
   contact_street1 TEXT,
   contact_street2 TEXT,
   contact_city TEXT,
   contact_state TEXT,
   contact_postcode TEXT,
   contact_country TEXT,
+  
+  -- Communication
+  email TEXT,
   phone TEXT,
   fax TEXT,
   website TEXT,
-  email TEXT,
+  
+  -- Business details
+  export_template TEXT,
   currency_code TEXT,
+  account_code TEXT,
+  
+  -- Factory address
+  factory_street1 TEXT,
+  factory_street2 TEXT,
+  factory_city TEXT,
+  factory_state TEXT,
+  factory_postcode TEXT,
+  factory_country TEXT,
+  
+  -- Notes and metadata
   notes TEXT,
   date_added TIMESTAMP,
   date_updated TIMESTAMP,
-  -- ... other fields
+  
+  -- System fields
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX idx_supplier_id ON supplier(supplier_id);
+-- Indexes
 CREATE INDEX idx_supplier_name ON supplier(supplier_name);
 CREATE INDEX idx_supplier_email ON supplier(email);
+CREATE INDEX idx_supplier_reference ON supplier(supplier_reference);
+CREATE INDEX idx_supplier_id_numeric ON supplier(id);
+CREATE INDEX idx_supplier_country ON supplier(contact_country);
+CREATE INDEX idx_supplier_account_code ON supplier(account_code);
+
+-- Update trigger
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_supplier_updated_at BEFORE UPDATE
+    ON supplier FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 ```
 
 ### Critical Constraints
@@ -483,6 +565,12 @@ Without these, the `ON CONFLICT` clause in upserts will fail with:
 ```
 there is no unique or exclusion constraint matching the ON CONFLICT specification
 ```
+
+### Migration Scripts
+
+For existing tables, use the migration scripts in `sql/`:
+- `migrate_supplier_table.sql` - Adds missing columns safely
+- `create_supplier_table_complete.sql` - Full schema for new installations
 
 ---
 
@@ -499,46 +587,54 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+  PROJECT_REF: ${{ secrets.PROJECT_REF }}
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      # 1. Checkout code
       - uses: actions/checkout@v3
       
-      # 2. Install Supabase CLI
       - uses: supabase/setup-cli@v1
         with:
           version: 2.x.x
       
-      # 3. Build function structure
-      # For each *.js file (except utils.js):
-      #   - Create supabase/functions/{name}/
-      #   - Copy function as index.ts
-      #   - Copy utils.js
-      
-      # 4. Deploy each function
-      # supabase functions deploy {name} \
-      #   --project-ref $PROJECT_REF
+      # Build and deploy each function
+      - name: Deploy Edge Functions (Supabase CLI v2)
+        run: |
+          mkdir -p supabase/functions
+          
+          for file in *.js; do
+            fn=$(basename "$file" .js)
+            if [ "$fn" = "utils" ]; then
+              continue
+            fi
+          
+            echo "Preparing function $fn"
+            dir="supabase/functions/$fn"
+            mkdir -p "$dir"
+            cp "$file" "$dir/index.ts"
+            cp utils.js "$dir/utils.js"
+          
+            echo "Deploying $fn"
+            supabase functions deploy "$fn" \
+              --project-ref "$PROJECT_REF" \
+              --use-api
+          done
 ```
 
 ### Manual Deployment
 
 ```bash
-# Local development
-supabase functions serve GetItem
-
 # Deploy single function
-supabase functions deploy GetItem \
-  --project-ref your-project-ref
+supabase functions deploy GetSupplier --project-ref your-project-ref
 
 # Deploy all functions
-for fn in *.js; do
-  name=$(basename "$fn" .js)
-  if [ "$name" != "utils" ]; then
-    supabase functions deploy "$name" \
-      --project-ref your-project-ref
-  fi
+for fn in Get*.js global_sync.js; do
+  name="${fn%.js}"
+  supabase functions deploy "$name" --project-ref your-project-ref
 done
 ```
 
@@ -550,278 +646,159 @@ done
 
 1. **Clone Repository**
 ```bash
-git clone https://github.com/your-org/neto-export
+git clone https://github.com/lumberjack-so/neto-export
 cd neto-export
 ```
 
-2. **Install Supabase CLI**
-```bash
-npm install -g supabase
-```
-
-3. **Set Environment Variables**
+2. **Set Environment Variables**
 ```bash
 # .env.local
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
-NETO_API_ENDPOINT=https://yourdomain.neto.com.au/do/WS/NetoAPI
-NETO_API_KEY=staging-key
-NETO_API_USERNAME=staging-username
+NETO_API_KEY=your-api-key
 ```
+
+3. **Create Database Tables**
+   - Run SQL scripts in Supabase Dashboard
+   - Start with `sql/create_supplier_table_complete.sql`
 
 4. **Test Locally**
 ```bash
 # Serve function locally
-supabase functions serve GetItem --env-file .env.local
+supabase functions serve GetSupplier --env-file .env.local
 
-# In another terminal, test it
-curl -X POST http://localhost:54321/functions/v1/GetItem \
+# Test with curl
+curl -X POST http://localhost:54321/functions/v1/GetSupplier \
   -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
   -H "Content-Type: application/json"
 ```
 
 ### Development Best Practices
 
-1. **Test with Small Datasets First**
-   - Modify `Limit` in filter to 10-50 items
-   - Verify transformations are correct
-   - Check database constraints
-
-2. **Use Console Logging**
+1. **Always Check Environment Variables**
 ```javascript
-console.log('Fetched', items.length, 'items from Neto')
-console.log('Transformed data sample:', rows.slice(0, 2))
-```
-
-3. **Handle Errors Gracefully**
-```javascript
-try {
-  // Main logic
-} catch (error) {
-  console.error('Function failed:', error)
-  return new Response(
-    JSON.stringify({ 
-      success: false, 
-      error: error.message,
-      stack: error.stack  // Only in dev!
-    }),
-    { status: 500 }
-  )
+const apiKey = Deno.env.get('NETO_API_KEY')
+if (!apiKey) {
+  return error response with helpful message
 }
 ```
 
-4. **Monitor Performance**
+2. **Use Comprehensive Logging**
 ```javascript
-const startTime = Date.now()
-// ... operation ...
-const duration = Date.now() - startTime
-console.log(`Operation took ${duration}ms`)
+console.log('Request payload:', JSON.stringify(filterData))
+console.log('Raw API response:', JSON.stringify(response).substring(0, 500))
+console.log(`Found ${suppliers.length} suppliers`)
+```
+
+3. **Handle Different Response Formats**
+```javascript
+// Neto sometimes returns empty string instead of empty array
+if (Array.isArray(Supplier)) {
+  suppliers = Supplier
+} else if (Supplier === '' || !Supplier) {
+  suppliers = []
+}
+```
+
+4. **Test with Small Datasets First**
+```javascript
+// During development
+const filterData = {
+  Filter: {
+    Limit: 10,  // Small limit for testing
+    OutputSelector: [...]
+  }
+}
 ```
 
 ---
 
 ## 10. Common Issues & Solutions
 
-### Issue: "ON CONFLICT specification" Error
+### Issue: "Supplier":"" (Empty String Response)
 
-**Error:**
-```
-there is no unique or exclusion constraint matching the ON CONFLICT specification
-```
-
-**Cause:** Table missing UNIQUE constraint on conflict column
-
-**Solution:**
-```sql
--- Add unique constraint
-ALTER TABLE your_table 
-ADD CONSTRAINT unique_your_column 
-UNIQUE (your_column);
-```
-
-### Issue: "Could not find column in schema cache"
-
-**Error:**
-```
-Could not find the 'column_name' column of 'table' in the schema cache
-```
-
-**Cause:** 
-- Column doesn't exist in table
-- PostgREST schema cache is outdated
-
-**Solution:**
-```sql
--- Option 1: Add missing column
-ALTER TABLE your_table 
-ADD COLUMN column_name TEXT;
-
--- Option 2: Remove from transformation
-// In utils.js, remove the field from mapping
-```
-
-### Issue: CPU Time Exceeded (546 Error)
-
-**Error:**
-```
-Function failed due to not having enough compute resources
-```
-
-**Cause:** Processing too much data at once
+**Cause:** Wrong filter parameters, especially Page parameter for GetSupplier
 
 **Solution:**
 ```javascript
-// Reduce page size
-const PAGE_SIZE = 500  // Down from 1000
+// DON'T DO THIS for GetSupplier:
+Filter: { Page: 1, Limit: 1000 }
 
-// Add delays between pages
-await new Promise(resolve => setTimeout(resolve, 100))
+// DO THIS:
+Filter: { Limit: 10000 }  // No Page parameter!
 ```
+
+### Issue: Parameter Order in upsertData
+
+**Error:** `upsertData is not a function` or unexpected behavior
+
+**Solution:**
+```javascript
+// WRONG:
+await upsertData(supabase, table, rows, conflictColumn)
+
+// CORRECT:
+await upsertData(supabase, table, conflictColumn, rows)
+```
+
+### Issue: Return Value from upsertData
+
+**Error:** Treating returned object as number
+
+**Solution:**
+```javascript
+// WRONG:
+const count = await upsertData(...)
+totalInserted += count
+
+// CORRECT:
+const { count } = await upsertData(...)
+totalInserted += count || 0
+```
+
+### Issue: CPU Time Exceeded
+
+**Solution:**
+1. Reduce PAGE_SIZE to 500
+2. Add delays between pages
+3. Process in smaller chunks
 
 ### Issue: Date/Time Out of Range
 
-**Error:**
-```
-date/time field value out of range: "0000-00-00 00:00:00"
-```
+**Error:** `date/time field value out of range: "0000-00-00 00:00:00"`
 
-**Cause:** MySQL zero dates incompatible with PostgreSQL
-
-**Solution:**
+**Solution:** Already handled in transformData for GetCategory:
 ```javascript
-// In transformData()
-const normalizeDate = (date) => {
-  if (!date || date === '0000-00-00 00:00:00') return null
-  return date
-}
-```
-
-### Issue: Duplicate Key Violations
-
-**Error:**
-```
-ON CONFLICT DO UPDATE command cannot affect row a second time
-```
-
-**Cause:** Same key appears multiple times in single upsert
-
-**Solution:**
-```javascript
-// Deduplicate before upserting
-const unique = rows.filter((row, index, self) =>
-  index === self.findIndex(r => r.parent_sku === row.parent_sku)
-)
+const normalizeDate = (str) => str === '0000-00-00 00:00:00' ? null : str
 ```
 
 ---
 
-## 11. Adding New Endpoints
+## 11. API Quirks & Special Cases
 
-### Step-by-Step Guide
+### Pagination Behavior
 
-#### 1. Research Neto API Documentation
-```bash
-# Check docs folder
-cat docs/developers.maropost.com_documentation_engineers_api-documentation_[endpoint].md
-```
+| Endpoint | Page Support | Empty Response | Notes |
+|----------|--------------|----------------|-------|
+| GetItem | ✅ Yes | `"Item": []` | Standard pagination |
+| GetCustomer | ✅ Yes | `"Customer": []` | Large dataset |
+| GetOrder | ✅ Yes | `"Order": []` | Use date filters |
+| GetPayment | ✅ Yes | `"Payment": []` | Needs deduplication |
+| GetSupplier | ❌ **NO** | `"Supplier": ""` | Returns empty string! |
+| GetCategory | ❌ No | `"Category": []` | Small dataset |
+| GetContent | ❌ No | `"Content": []` | Fixed limit |
 
-#### 2. Create Edge Function File
-```bash
-# Create new function
-touch GetSupplier.js
-```
+### Special Filter Requirements
 
-#### 3. Implement Function
-```javascript
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
-import { initSupabase, callNetoAPI, transformData, upsertData } from './utils.js'
+**GetSupplier:**
+- Must NOT include Page parameter
+- Returns empty string `""` instead of empty array when no data
+- Use high Limit value to get all suppliers
 
-const endpoint = 'GetSupplier'
-const table = 'supplier'
-const conflictColumn = 'supplier_id'
-
-const filterData = {
-  Filter: {
-    Active: true,
-    OutputSelector: [
-      'SupplierID',
-      'SupplierName',
-      'ContactName',
-      'Email',
-      // ... fields from API docs
-    ]
-  }
-}
-
-serve(async () => {
-  const supabase = initSupabase()
-  
-  try {
-    const { Supplier = [] } = await callNetoAPI(endpoint, filterData)
-    const rows = transformData(endpoint, { Supplier })
-    const count = await upsertData(supabase, table, rows, conflictColumn)
-    
-    return new Response(
-      JSON.stringify({ success: true, inserted: count }),
-      { headers: { 'Content-Type': 'application/json' } }
-    )
-  } catch (error) {
-    console.error(`${endpoint} error:`, error)
-    return new Response(
-      JSON.stringify({ success: false, error: error.message }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    )
-  }
-})
-```
-
-#### 4. Add Transformation Logic
-```javascript
-// In utils.js transformData()
-case 'GetSupplier':
-  return data.Supplier?.map(s => ({
-    supplier_id: s.SupplierID,
-    supplier_name: s.SupplierName,
-    contact_name: s.ContactName,
-    email: s.Email,
-    // ... map all fields
-  })) || []
-```
-
-#### 5. Create Database Table
-```sql
-CREATE TABLE supplier (
-  supplier_id TEXT PRIMARY KEY,
-  supplier_name TEXT NOT NULL,
-  contact_name TEXT,
-  email TEXT,
-  phone TEXT,
-  date_added TIMESTAMP DEFAULT NOW(),
-  date_updated TIMESTAMP DEFAULT NOW()
-);
-
-CREATE UNIQUE INDEX idx_supplier_id ON supplier(supplier_id);
-```
-
-#### 6. Update global_sync.js
-```javascript
-// Add to ENDPOINTS array
-const ENDPOINTS = [
-  'GetItem',
-  'GetCustomer',
-  // ...
-  'GetSupplier'  // Add new endpoint
-]
-```
-
-#### 7. Test Thoroughly
-```bash
-# Test locally first
-supabase functions serve GetSupplier --env-file .env.local
-
-# Deploy when ready
-supabase functions deploy GetSupplier --project-ref your-ref
-```
+**GetCustomer:**
+- Supports standard pagination
+- May timeout with large datasets
+- Use PAGE_SIZE of 500 to avoid CPU limits
 
 ---
 
@@ -829,61 +806,39 @@ supabase functions deploy GetSupplier --project-ref your-ref
 
 ### Pagination Strategy
 
-**Current Implementation:**
-- Most functions use 500-1000 items per page
-- Sequential processing (page 1, then 2, then 3...)
-
-**Optimization Opportunities:**
+**For Large Datasets (GetCustomer):**
 ```javascript
-// Parallel page fetching (use with caution)
-const pagePromises = []
-for (let i = 1; i <= estimatedPages; i++) {
-  pagePromises.push(fetchPage(i))
-}
-const allPages = await Promise.all(pagePromises)
+const PAGE_SIZE = 500  // Reduced from 1000 to avoid timeouts
+// Process ~35,000 customers in ~70 pages
+```
+
+**For Non-Paginated Endpoints (GetSupplier):**
+```javascript
+// Set high limit to get all records in one request
+Filter: { Limit: 10000 }
 ```
 
 ### Memory Management
 
-**Current Issues:**
-- Large datasets can cause memory spikes
-- Transforming all data before upserting
-
-**Better Approach:**
+**Deduplication for Large Batches:**
 ```javascript
-// Process and upsert in chunks
-for (const chunk of chunks(items, 100)) {
-  const transformed = transformData(endpoint, { Item: chunk })
-  await upsertData(supabase, table, transformed, conflictColumn)
-}
+const unique = rows.filter((row, index, self) =>
+  index === self.findIndex(r => r.supplier_id === row.supplier_id)
+)
 ```
-
-### CPU Usage
-
-**Timeouts Happen When:**
-- Processing > 50,000 records
-- Complex transformations
-- No pagination
-
-**Solutions:**
-1. Reduce page size
-2. Add delays between operations
-3. Simplify transformations
-4. Use database views for complex logic
 
 ### Database Optimization
 
+**Indexes for Performance:**
 ```sql
--- Add indexes for common queries
+CREATE INDEX idx_supplier_name ON supplier(supplier_name);
 CREATE INDEX idx_orders_date ON orders(order_date);
-CREATE INDEX idx_item_active ON item(is_active) WHERE is_active = true;
+CREATE INDEX idx_customer_email ON customer(email);
+```
 
--- Partition large tables
-CREATE TABLE orders_2024 PARTITION OF orders
-FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
-
--- Regular maintenance
-VACUUM ANALYZE item;
+**Regular Maintenance:**
+```sql
+VACUUM ANALYZE supplier;
 REINDEX TABLE customer;
 ```
 
@@ -893,77 +848,149 @@ REINDEX TABLE customer;
 
 ### Security Best Practices
 
-1. **Never Commit Secrets**
-```bash
-# .gitignore
-.env
-.env.local
-*.key
-```
+1. **Environment Variable Management**
+   - Store all secrets in Supabase Edge Functions settings
+   - Never commit secrets to repository
+   - Rotate API keys regularly
 
-2. **Use Service Role Key Carefully**
-- Only in Edge Functions
-- Never expose to client
-- Rotate regularly
-
-3. **Validate Input**
+2. **API Key Validation**
 ```javascript
-// Even though these are internal functions
-if (!endpoint || typeof endpoint !== 'string') {
-  throw new Error('Invalid endpoint')
+const apiKey = Deno.env.get('NETO_API_KEY')
+if (!apiKey) {
+  return new Response(
+    JSON.stringify({ 
+      success: false, 
+      error: 'NETO_API_KEY environment variable is not set',
+      hint: 'Set it in Supabase Dashboard > Settings > Edge Functions > Secrets'
+    }),
+    { status: 500 }
+  )
 }
 ```
 
-4. **Log Sanitization**
-```javascript
-// Don't log sensitive data
-console.log('Processing customer:', username)  // OK
-console.log('Customer data:', customerData)    // BAD - might contain PII
-```
+3. **Service Role Key Usage**
+   - Only used server-side in Edge Functions
+   - Provides full database access
+   - Never expose to client applications
 
-### Environment Management
+### Setting Secrets
 
-**Local Development (.env.local):**
+**Via Supabase Dashboard:**
+1. Navigate to Settings → Edge Functions
+2. Add secrets:
+   - `NETO_API_KEY`
+   - `SUPABASE_URL` (auto-set)
+   - `SUPABASE_SERVICE_ROLE_KEY` (auto-set)
+
+**Via CLI:**
 ```bash
-SUPABASE_URL=http://localhost:54321
-SUPABASE_SERVICE_ROLE_KEY=local-dev-key
-NETO_API_ENDPOINT=https://staging.neto.com.au/do/WS/NetoAPI
-NETO_API_KEY=staging-key
+supabase secrets set NETO_API_KEY=your-key --project-ref your-ref
 ```
 
-**Production (GitHub Secrets):**
-- `SUPABASE_ACCESS_TOKEN`: For CLI operations
-- `PROJECT_REF`: Target Supabase project
-- Never store production keys in code
+---
 
-**Supabase Dashboard:**
-- Edge Function secrets
-- Accessible via Dashboard > Settings > Edge Functions
+## 14. Adding New Endpoints
+
+### Step-by-Step Guide
+
+#### 1. Research API Documentation
+```bash
+# Check docs folder for endpoint details
+ls docs/ | grep -i endpoint_name
+```
+
+#### 2. Create Edge Function
+```javascript
+// GetNewEndpoint.js
+import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { initSupabase, callNetoAPI, transformData, upsertData } from './utils.js'
+
+const endpoint = 'GetNewEndpoint'
+const table = 'new_endpoint'
+const conflictColumn = 'id_field'
+
+const filterData = {
+  Filter: {
+    // Check if endpoint supports Page parameter!
+    Limit: 1000,
+    OutputSelector: [
+      // List all needed fields
+    ]
+  }
+}
+
+serve(async () => {
+  // Implementation based on pagination support
+})
+```
+
+#### 3. Add Transformation Logic
+```javascript
+// In utils.js
+case 'GetNewEndpoint':
+  return data.NewEndpoint?.map(item => ({
+    // Map API fields to database columns
+    id_field: item.IDField,
+    name: item.Name,
+    // Handle data types
+    amount: parseFloat(item.Amount) || 0,
+    is_active: item.Active === 'True',
+    // Handle dates
+    date_added: item.DateAdded || null
+  })) || []
+```
+
+#### 4. Create Database Table
+```sql
+CREATE TABLE IF NOT EXISTS new_endpoint (
+  id_field TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  amount DECIMAL(10,2),
+  is_active BOOLEAN DEFAULT true,
+  date_added TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_new_endpoint_name ON new_endpoint(name);
+```
+
+#### 5. Update global_sync.js
+```javascript
+const functionSlugs = [
+  // ... existing functions
+  'GetNewEndpoint'
+]
+```
+
+#### 6. Test Thoroughly
+- Test with small Limit first
+- Check logs for API response format
+- Verify data transformation
+- Ensure upsert works correctly
 
 ---
 
 ## Conclusion
 
-This Neto Export system is a robust, scalable solution for syncing e-commerce data from Neto to Supabase. While it has some rough edges (data inconsistencies, missing endpoints), the architecture is sound and extensible.
+The Neto Export system successfully synchronizes e-commerce data from Neto to Supabase, handling various API quirks and pagination strategies. Key achievements:
 
-**Key Strengths:**
-- Modular design makes adding endpoints easy
-- Pagination handles large datasets
-- Error handling prevents cascade failures
-- Automated deployment via GitHub Actions
+**✅ Implemented:**
+- 10 working Edge Functions
+- Flexible pagination handling
+- MySQL date normalization
+- Comprehensive error handling
+- Automated deployment pipeline
 
-**Areas for Improvement:**
-- Add retry logic for failed requests
-- Implement webhook support for real-time updates
-- Add data validation before upserts
-- Create monitoring/alerting system
-- Build admin UI for manual syncs
+**🔧 Needs Work:**
+- GetVoucher schema mismatch
+- GetItem deduplication
+- Additional endpoints (Shipping, Currency)
 
-**Next Steps for New Developers:**
-1. Set up local environment
-2. Run a few manual syncs to understand data flow
-3. Check database constraints match code expectations
-4. Add missing Supplier endpoint
-5. Implement better error tracking
+**🎯 Best Practices:**
+- Always check API response format in logs
+- Remember GetSupplier doesn't support Page parameter
+- Use appropriate PAGE_SIZE to avoid timeouts
+- Implement deduplication where needed
+- Keep comprehensive logging for debugging
 
-Remember: This system touches critical business data. Always test thoroughly in a staging environment before deploying changes to production. 
+This system provides a solid foundation for real-time data synchronization, enabling advanced analytics and integrations that wouldn't be possible with Neto alone. 
