@@ -10,8 +10,11 @@ const filterData = {
   Filter: {
     Limit: 10000,
     OutputSelector: [
+      'ID',
       'SupplierID',
       'SupplierReference',
+      'LeadTime1',
+      'LeadTime2',
       'SupplierCompany',
       'SupplierStreet1',
       'SupplierStreet2',
@@ -19,20 +22,42 @@ const filterData = {
       'SupplierState',
       'SupplierPostcode',
       'SupplierCountry',
+      'SupplierEmail',
       'SupplierPhone',
       'SupplierFax',
       'SupplierURL',
-      'SupplierEmail',
+      'ExportTemplate',
       'SupplierCurrencyCode',
-      'SupplierNotes',
-      'LeadTime1',
-      'LeadTime2'
+      'AccountCode',
+      'FactoryStreet1',
+      'FactoryStreet2',
+      'FactoryCity',
+      'FactoryState',
+      'FactoryPostcode',
+      'FactoryCountry',
+      'SupplierNotes'
     ]
   }
 }
 
 serve(async () => {
   const supabase = initSupabase()
+  
+  // Debug: Check if API key is set
+  const apiKey = Deno.env.get('NETO_API_KEY')
+  console.log('NETO_API_KEY is set:', !!apiKey)
+  console.log('NETO_API_KEY length:', apiKey ? apiKey.length : 0)
+  
+  if (!apiKey) {
+    return new Response(
+      JSON.stringify({ 
+        success: false, 
+        error: 'NETO_API_KEY environment variable is not set',
+        hint: 'Set it in Supabase Dashboard > Settings > Edge Functions > Secrets'
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
   
   try {
     // Check if supplier table exists
@@ -57,53 +82,51 @@ serve(async () => {
     let page = 1
     let totalInserted = 0
     
-    // First, let's test if there are any suppliers at all
-    console.log('Testing for suppliers with minimal filter...')
-    const testResponse = await callNetoAPI(endpoint, {
-      Filter: {
-        Page: 1,
-        Limit: 1,
-        OutputSelector: ['SupplierID', 'SupplierCompany']
-      }
-    })
-    console.log('Test response:', JSON.stringify(testResponse))
-    
-    // If test didn't return suppliers, try without any filter criteria
-    if (!testResponse.Supplier || testResponse.Supplier === '') {
-      console.log('No suppliers found with basic filter, trying without filter criteria...')
-      const testResponse2 = await callNetoAPI(endpoint, {
-        Filter: {
-          OutputSelector: ['SupplierID', 'SupplierCompany']
-        }
-      })
-      console.log('Test response 2:', JSON.stringify(testResponse2))
-    }
-    
     while (true) {
       // Fetch page of suppliers
       console.log(`Fetching suppliers page ${page}...`)
+      console.log('Request payload:', JSON.stringify({
+        Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE }
+      }))
+      
       const response = await callNetoAPI(endpoint, {
         Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE }
       })
       
       console.log('Raw API response:', JSON.stringify(response).substring(0, 500))
+      console.log('Response type:', typeof response)
+      console.log('Response has Supplier?', 'Supplier' in response)
+      console.log('Supplier type:', typeof response.Supplier)
+      console.log('Supplier is array?', Array.isArray(response.Supplier))
       
       const { Supplier = [] } = response
       
-      console.log(`Found ${Supplier.length} suppliers on page ${page}`)
+      // Handle case where Supplier might be an empty string
+      let suppliers = []
+      if (Array.isArray(Supplier)) {
+        suppliers = Supplier
+      } else if (Supplier === '' || !Supplier) {
+        console.log('Supplier is empty string or falsy, treating as empty array')
+        suppliers = []
+      } else {
+        console.log('Unexpected Supplier format:', Supplier)
+        suppliers = []
+      }
       
-      if (Supplier.length === 0) {
+      console.log(`Found ${suppliers.length} suppliers on page ${page}`)
+      
+      if (suppliers.length === 0) {
         console.log('No more suppliers found, ending pagination')
         break
       }
       
       // Log first supplier as sample
-      if (Supplier.length > 0) {
-        console.log('Sample supplier:', JSON.stringify(Supplier[0]))
+      if (suppliers.length > 0) {
+        console.log('Sample supplier:', JSON.stringify(suppliers[0]))
       }
       
       // Transform data
-      const rows = transformData(endpoint, { Supplier })
+      const rows = transformData(endpoint, { Supplier: suppliers })
       console.log(`Transformed ${rows.length} rows`)
       
       // Deduplicate on supplier_id
@@ -116,10 +139,10 @@ serve(async () => {
       const { count } = await upsertData(supabase, table, conflictColumn, unique)
       totalInserted += count || 0
       
-      console.log(`Page ${page}: processed ${Supplier.length} suppliers, inserted ${count}`)
+      console.log(`Page ${page}: processed ${suppliers.length} suppliers, inserted ${count}`)
       
       // Check if we got less than PAGE_SIZE (last page)
-      if (Supplier.length < PAGE_SIZE) break
+      if (suppliers.length < PAGE_SIZE) break
       page++
     }
     

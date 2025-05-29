@@ -11,6 +11,11 @@ export const initSupabase = () => {
 }
 
 export async function callNetoAPI(action, filterData) {
+  console.log(`Calling Neto API: ${action}`)
+  console.log('API URL:', NETO_API_URL)
+  console.log('API Key exists:', !!NETO_API_KEY)
+  console.log('Request body:', JSON.stringify(filterData))
+  
   const response = await fetch(NETO_API_URL, {
     method: 'POST',
     headers: {
@@ -22,11 +27,19 @@ export async function callNetoAPI(action, filterData) {
     body: JSON.stringify(filterData)
   })
 
+  console.log('Response status:', response.status)
+  console.log('Response headers:', Object.fromEntries(response.headers.entries()))
+  
   if (!response.ok) {
     const text = await response.text()
+    console.error('API error response:', text)
     throw new Error(`API call failed (${response.status}): ${text}`)
   }
-  return await response.json()
+  
+  const jsonResponse = await response.json()
+  console.log('Response JSON preview:', JSON.stringify(jsonResponse).substring(0, 200))
+  
+  return jsonResponse
 }
 
 // Transformers per endpoint
@@ -114,9 +127,13 @@ export function transformData(endpoint, data) {
         date_added: v.DateAdded
       })) || []
     case 'GetSupplier':
+      console.log('GetSupplier transform - sample data:', data.Supplier?.[0])
       return data.Supplier?.map(s => ({
+        id: s.ID ? parseInt(s.ID) : null,
         supplier_id: s.SupplierID,
         supplier_reference: s.SupplierReference ? parseInt(s.SupplierReference) : null,
+        lead_time_1: s.LeadTime1 ? parseInt(s.LeadTime1) : null,
+        lead_time_2: s.LeadTime2 ? parseInt(s.LeadTime2) : null,
         supplier_name: s.SupplierCompany,
         contact_street1: s.SupplierStreet1,
         contact_street2: s.SupplierStreet2,
@@ -124,14 +141,22 @@ export function transformData(endpoint, data) {
         contact_state: s.SupplierState,
         contact_postcode: s.SupplierPostcode,
         contact_country: s.SupplierCountry,
+        email: s.SupplierEmail,
         phone: s.SupplierPhone,
         fax: s.SupplierFax,
         website: s.SupplierURL,
-        email: s.SupplierEmail,
+        export_template: s.ExportTemplate,
         currency_code: s.SupplierCurrencyCode,
+        account_code: s.AccountCode,
+        factory_street1: s.FactoryStreet1,
+        factory_street2: s.FactoryStreet2,
+        factory_city: s.FactoryCity,
+        factory_state: s.FactoryState,
+        factory_postcode: s.FactoryPostcode,
+        factory_country: s.FactoryCountry,
         notes: s.SupplierNotes,
-        date_added: s.DateAdded,
-        date_updated: s.DateUpdated
+        date_added: s.DateAdded || null,
+        date_updated: s.DateUpdated || null
       })) || []
     default:
       return []
