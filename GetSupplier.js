@@ -8,7 +8,6 @@ const conflictColumn = 'supplier_id'
 
 const filterData = {
   Filter: {
-    Page: 1,
     Limit: 10000,
     OutputSelector: [
       'SupplierID',
