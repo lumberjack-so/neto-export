@@ -165,7 +165,10 @@ export function transformData(endpoint, data) {
 
 export async function upsertData(supabase, table, conflictColumn, rows) {
   if (!rows.length) return { count: 0 }
-  const { error, count } = await supabase.from(table).upsert(rows, { onConflict: conflictColumn })
+  const { error, data, count } = await supabase
+    .from(table)
+    .upsert(rows, { onConflict: conflictColumn })
+    .select('*', { count: 'exact' })
   if (error) throw error
   return { count }
 } 

@@ -12,7 +12,7 @@ const filterData = {
     DateAddedTo: '2100-01-01 00:00:00',
     DateUpdatedFrom: '1900-01-01 00:00:00',
     DateUpdatedTo: '2100-01-01 00:00:00',
-    Page: 1,
+    Page: 0,
     Limit: 10000,
     OutputSelector: ["ParentSKU", "ID", "Brand", "Model", "Name", "IsActive", "DateAdded", "DateUpdated"]
   }
@@ -22,7 +22,8 @@ serve(async () => {
   const supabase = initSupabase()
   try {
     const PAGE_SIZE = 1000
-    let page = 1, totalInserted = 0
+    let page = 0
+    let totalInserted = 0
 
     while (true) {
       const { Item = [] } = await callNetoAPI(endpoint, {

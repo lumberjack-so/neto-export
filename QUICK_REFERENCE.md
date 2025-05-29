@@ -209,12 +209,12 @@ ORDER BY ordinal_position;
 | Endpoint | Supports Page? | Notes |
 |----------|---------------|--------|
 | GetItem | Yes | Use Page + Limit |
-| GetCustomer | Yes | Page starts at 1 |
+| GetCustomer | Yes | Page starts at 0 |
 | GetOrder | Yes | Use date filters |
-| GetPayment | Yes | Deduplicate results |
+| GetPayment | Yes | Page starts at 0 + deduplication |
 | GetSupplier | **NO** | Use Limit only! |
 | GetCategory | No | Small dataset |
-| GetContent | No | Fixed limit |
+| GetContent | Yes | Page + Limit |
 
 ### Common Errors & Solutions
 

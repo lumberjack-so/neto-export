@@ -371,7 +371,7 @@ serve(async () => {
   
   try {
     const PAGE_SIZE = 500  // Reduced to avoid CPU timeouts
-    let page = 1
+    let page = 0
     let totalInserted = 0
     
     while (true) {
@@ -460,7 +460,7 @@ serve(async () => {
 | `GetOrder.js` | GetOrder | orders | order_id | Yes | Complex nested data |
 | `GetPayment.js` | GetPayment | payment | payment_id | Yes | Includes deduplication |
 | `GetCategory.js` | GetCategory | category | category_id | No | Handles MySQL zero dates |
-| `GetContent.js` | GetContent | content | content_id | No | Fixed limit |
+| `GetContent.js` | GetContent | content | content_id | Yes | ~200 pages, use Page + Limit |
 | `GetWarehouse.js` | GetWarehouse | warehouse | warehouse_id | No | Small dataset |
 | `GetRma.js` | GetRma | rma | rma_id | No | Returns/refunds |
 | `GetVoucher.js` | GetVoucher | voucher | voucher_id | No | Schema needs fixing |

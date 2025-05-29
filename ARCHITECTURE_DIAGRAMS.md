@@ -636,7 +636,7 @@ graph TB
 | GetOrder | ✅ Yes | `[]` | Page + Limit | Use date filters |
 | GetPayment | ✅ Yes | `[]` | Page + Limit + Dedup | Duplicates possible |
 | GetCategory | ❌ No | `[]` | Limit only | Small dataset |
-| GetContent | ❌ No | `[]` | Fixed limit | ~200 pages max |
+| GetContent | ✅ Yes | `[]` | Page + Limit | ~200 pages max |
 | GetWarehouse | ❌ No | `[]` | Limit only | ~10 records |
 | GetRma | ❌ No | `[]` | Limit only | Variable size |
 | GetVoucher | ❌ No | `[]` | Limit only | Schema issues |

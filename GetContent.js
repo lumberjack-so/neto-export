@@ -6,32 +6,41 @@ const endpoint = 'GetContent'
 const table = 'content'
 const conflictColumn = 'content_id'
 
-const filterData = {
-  Filter: {
-    DatePostedFrom: '1900-01-01 00:00:00',
-    DatePostedTo: '2100-01-01 00:00:00',
-    Limit: 100000,
-    OutputSelector: ["ContentID", "ContentName", "ContentType", "DatePosted", "DateUpdated"]
-  }
+const filterOptions = {
+  DatePostedFrom: '1900-01-01 00:00:00',
+  DatePostedTo: '2100-01-01 00:00:00',
+  OutputSelector: ["ContentID", "ContentName", "ContentType", "DatePosted", "DateUpdated"]
 }
 
 serve(async () => {
   const supabase = initSupabase()
   try {
-    const raw = await callNetoAPI(endpoint, filterData)
-    console.log('Neto returned', raw.Customer?.length ?? 0, 'records')
+    const PAGE_SIZE = 1000
+    let page = 0
+    let totalInserted = 0
 
-    const rows = transformData(endpoint, raw)
-    console.log('Rows to upsert', rows.length)
+    while (true) {
+      const { Content = [] } = await callNetoAPI(endpoint, {
+        Filter: { ...filterOptions, Page: page, Limit: PAGE_SIZE }
+      })
 
-    const { count } = await supabase
-      .from(table)
-      .upsert(rows, { onConflict: conflictColumn, count: 'exact' })
-      .select()
-    console.log('Rows inserted/updated in Postgres', count)
+      if (Content.length === 0) break
 
-    return new Response(JSON.stringify({ success: true, inserted: count }), { headers: { 'Content-Type': 'application/json' } })
+      console.log(`Neto returned ${Content.length} records on page ${page}`)
+
+      const rows = transformData(endpoint, { Content })
+      console.log('Rows to upsert', rows.length)
+
+      const { count } = await upsertData(supabase, table, conflictColumn, rows)
+      totalInserted += count ?? 0
+
+      if (Content.length < PAGE_SIZE) break
+      page++
+    }
+
+    console.log('Total rows inserted/updated in Postgres', totalInserted)
+    return new Response(JSON.stringify({ success: true, inserted: totalInserted }), { headers: { 'Content-Type': 'application/json' } })
   } catch (err) {
     return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } })
   }
-}) 
+})

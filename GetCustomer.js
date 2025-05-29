@@ -20,7 +20,7 @@ serve(async () => {
   const supabase = initSupabase()
 
   try {
-    let page = 1
+    let page = 0
     let totalInserted = 0
     const PAGE_SIZE = 500
 
