@@ -8,6 +8,8 @@ const conflictColumn = 'supplier_id'
 
 const filterData = {
   Filter: {
+    Page: 1,
+    Limit: 10000,
     OutputSelector: [
       'SupplierID',
       'SupplierReference',
@@ -24,11 +26,9 @@ const filterData = {
       'SupplierEmail',
       'SupplierCurrencyCode',
       'SupplierNotes',
-      'DateAdded',
-      'DateUpdated'
-    ],
-    Page: 1,
-    Limit: 1000
+      'LeadTime1',
+      'LeadTime2'
+    ]
   }
 }
 
@@ -57,6 +57,28 @@ serve(async () => {
     const PAGE_SIZE = 1000
     let page = 1
     let totalInserted = 0
+    
+    // First, let's test if there are any suppliers at all
+    console.log('Testing for suppliers with minimal filter...')
+    const testResponse = await callNetoAPI(endpoint, {
+      Filter: {
+        Page: 1,
+        Limit: 1,
+        OutputSelector: ['SupplierID', 'SupplierCompany']
+      }
+    })
+    console.log('Test response:', JSON.stringify(testResponse))
+    
+    // If test didn't return suppliers, try without any filter criteria
+    if (!testResponse.Supplier || testResponse.Supplier === '') {
+      console.log('No suppliers found with basic filter, trying without filter criteria...')
+      const testResponse2 = await callNetoAPI(endpoint, {
+        Filter: {
+          OutputSelector: ['SupplierID', 'SupplierCompany']
+        }
+      })
+      console.log('Test response 2:', JSON.stringify(testResponse2))
+    }
     
     while (true) {
       // Fetch page of suppliers
