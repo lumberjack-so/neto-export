@@ -82,69 +82,63 @@ serve(async () => {
     let page = 1
     let totalInserted = 0
     
-    while (true) {
-      // Fetch page of suppliers
-      console.log(`Fetching suppliers page ${page}...`)
-      console.log('Request payload:', JSON.stringify({
-        Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE }
-      }))
-      
-      const response = await callNetoAPI(endpoint, {
-        Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE }
-      })
-      
-      console.log('Raw API response:', JSON.stringify(response).substring(0, 500))
-      console.log('Response type:', typeof response)
-      console.log('Response has Supplier?', 'Supplier' in response)
-      console.log('Supplier type:', typeof response.Supplier)
-      console.log('Supplier is array?', Array.isArray(response.Supplier))
-      
-      const { Supplier = [] } = response
-      
-      // Handle case where Supplier might be an empty string
-      let suppliers = []
-      if (Array.isArray(Supplier)) {
-        suppliers = Supplier
-      } else if (Supplier === '' || !Supplier) {
-        console.log('Supplier is empty string or falsy, treating as empty array')
-        suppliers = []
-      } else {
-        console.log('Unexpected Supplier format:', Supplier)
-        suppliers = []
-      }
-      
-      console.log(`Found ${suppliers.length} suppliers on page ${page}`)
-      
-      if (suppliers.length === 0) {
-        console.log('No more suppliers found, ending pagination')
-        break
-      }
-      
-      // Log first supplier as sample
-      if (suppliers.length > 0) {
-        console.log('Sample supplier:', JSON.stringify(suppliers[0]))
-      }
-      
-      // Transform data
-      const rows = transformData(endpoint, { Supplier: suppliers })
-      console.log(`Transformed ${rows.length} rows`)
-      
-      // Deduplicate on supplier_id
-      const unique = rows.filter((row, index, self) =>
-        index === self.findIndex(r => r.supplier_id === row.supplier_id)
-      )
-      console.log(`After deduplication: ${unique.length} unique rows`)
-      
-      // Upsert to database
-      const { count } = await upsertData(supabase, table, conflictColumn, unique)
-      totalInserted += count || 0
-      
-      console.log(`Page ${page}: processed ${suppliers.length} suppliers, inserted ${count}`)
-      
-      // Check if we got less than PAGE_SIZE (last page)
-      if (suppliers.length < PAGE_SIZE) break
-      page++
+    // Note: GetSupplier API doesn't support Page parameter properly
+    // We'll fetch all suppliers in one request
+    console.log('Fetching all suppliers...')
+    console.log('Request payload:', JSON.stringify(filterData))
+    
+    const response = await callNetoAPI(endpoint, filterData)
+    
+    console.log('Raw API response:', JSON.stringify(response).substring(0, 500))
+    console.log('Response type:', typeof response)
+    console.log('Response has Supplier?', 'Supplier' in response)
+    console.log('Supplier type:', typeof response.Supplier)
+    console.log('Supplier is array?', Array.isArray(response.Supplier))
+    
+    const { Supplier = [] } = response
+    
+    // Handle case where Supplier might be an empty string
+    let suppliers = []
+    if (Array.isArray(Supplier)) {
+      suppliers = Supplier
+    } else if (Supplier === '' || !Supplier) {
+      console.log('Supplier is empty string or falsy, no suppliers found')
+      suppliers = []
+    } else {
+      console.log('Unexpected Supplier format:', Supplier)
+      suppliers = []
     }
+    
+    console.log(`Found ${suppliers.length} suppliers total`)
+    
+    if (suppliers.length === 0) {
+      console.log('No suppliers found')
+      return new Response(
+        JSON.stringify({ success: true, inserted: 0, message: 'No suppliers found in Neto' }),
+        { headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+    
+    // Log first supplier as sample
+    if (suppliers.length > 0) {
+      console.log('Sample supplier:', JSON.stringify(suppliers[0]))
+    }
+    
+    // Transform data
+    const rows = transformData(endpoint, { Supplier: suppliers })
+    console.log(`Transformed ${rows.length} rows`)
+    
+    // Deduplicate on supplier_id
+    const unique = rows.filter((row, index, self) =>
+      index === self.findIndex(r => r.supplier_id === row.supplier_id)
+    )
+    console.log(`After deduplication: ${unique.length} unique rows`)
+    
+    // Upsert to database
+    const { count } = await upsertData(supabase, table, conflictColumn, unique)
+    totalInserted = count || 0
+    
+    console.log(`Processed ${suppliers.length} suppliers, inserted ${totalInserted}`)
     
     return new Response(
       JSON.stringify({ success: true, inserted: totalInserted }),
