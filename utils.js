@@ -113,6 +113,26 @@ export function transformData(endpoint, data) {
         balance: v.Balance,
         date_added: v.DateAdded
       })) || []
+    case 'GetSupplier':
+      return data.Supplier?.map(s => ({
+        supplier_id: s.SupplierID,
+        supplier_reference: s.SupplierReference ? parseInt(s.SupplierReference) : null,
+        supplier_name: s.SupplierCompany,
+        contact_street1: s.SupplierStreet1,
+        contact_street2: s.SupplierStreet2,
+        contact_city: s.SupplierCity,
+        contact_state: s.SupplierState,
+        contact_postcode: s.SupplierPostcode,
+        contact_country: s.SupplierCountry,
+        phone: s.SupplierPhone,
+        fax: s.SupplierFax,
+        website: s.SupplierURL,
+        email: s.SupplierEmail,
+        currency_code: s.SupplierCurrencyCode,
+        notes: s.SupplierNotes,
+        date_added: s.DateAdded,
+        date_updated: s.DateUpdated
+      })) || []
     default:
       return []
   }

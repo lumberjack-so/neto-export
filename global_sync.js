@@ -15,7 +15,8 @@ const functionSlugs = [
   'GetRma',
   'GetContent',
   'GetCategory',
-  'GetVoucher'
+  'GetVoucher',
+  'GetSupplier'
 ]
 
 async function triggerFunction(slug) {
