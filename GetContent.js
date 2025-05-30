@@ -7,6 +7,8 @@ const table = 'content'
 const conflictColumn = 'content_id'
 
 const filterOptions = {
+  DatePostedFrom: '1900-01-01 00:00:00',
+  DatePostedTo:   '2100-01-01 00:00:00',
   OutputSelector: ["ContentID", "ContentName", "ContentType", "DatePosted", "DateUpdated"]
 }
 
