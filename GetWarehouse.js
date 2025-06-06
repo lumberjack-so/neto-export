@@ -10,9 +10,10 @@ import {
 const endpoint = "GetWarehouse";
 const table = "warehouse";
 const conflictColumn = "warehouse_id";
+const PAGE_SIZE = 1000;
 
 const filterOptions = {
-	Limit: 1000,
+	Limit: PAGE_SIZE,
 	OutputSelector: [
 		"WarehouseID",
 		"WarehouseName",
@@ -26,32 +27,67 @@ const filterOptions = {
 serve(async () => {
 	const supabase = initSupabase();
 	try {
-		const PAGE_SIZE = 1000;
-		let page = 0;
+		// Get current sync state
+		const { data: syncState, error: syncError } = await supabase
+			.from("sync_state")
+			.select("*")
+			.eq("entity_type", "warehouses")
+			.single();
+
+		if (syncError) {
+			throw new Error(`Failed to get sync state: ${syncError.message}`);
+		}
+
+		let page = syncState?.last_synced_page || 0;
 		let totalInserted = 0;
 		const warehouses = [];
 
-		while (true) {
-			const { Warehouse = [] } = await callNetoAPI(endpoint, {
-				Filter: { ...filterOptions, Page: page, Limit: PAGE_SIZE },
-			});
-			warehouses.push(...Warehouse);
-			if (Warehouse.length === 0) break;
+		// Fetch one page of warehouses
+		console.log(`Fetching warehouses page ${page} (limit ${PAGE_SIZE})`);
+		const { Warehouse = [] } = await callNetoAPI(endpoint, {
+			Filter: { ...filterOptions, Page: page, Limit: PAGE_SIZE },
+		});
+		console.log(`Received ${Warehouse.length} warehouses on page ${page}`);
 
+		if (Warehouse.length > 0) {
 			const rows = transformData(endpoint, { Warehouse });
-			const { count } = await upsertData(supabase, table, conflictColumn, rows);
-			totalInserted += count ?? 0;
+			console.log(`Transform yielded ${rows.length} rows on page ${page}`);
 
-			if (Warehouse.length < PAGE_SIZE) break;
-			page++;
+			const { count } = await upsertData(supabase, table, conflictColumn, rows);
+			console.log(`Upserted ${count ?? 0} warehouses on page ${page}`);
+			totalInserted += count ?? 0;
+			warehouses.push(...Warehouse);
+
+			// Update sync state
+			const isComplete = Warehouse.length < PAGE_SIZE;
+			const { error: updateError } = await supabase
+				.from("sync_state")
+				.update({
+					last_synced_page: page + 1,
+					last_synced_date: new Date().toISOString(),
+					is_complete: isComplete,
+					total_records: (syncState?.total_records || 0) + Warehouse.length,
+				})
+				.eq("entity_type", "warehouses");
+
+			if (updateError) {
+				throw new Error(`Failed to update sync state: ${updateError.message}`);
+			}
 		}
 
-		console.log("all warehouses fetched-->>>>: ", warehouses);
 		return new Response(
-			JSON.stringify({ success: true, inserted: totalInserted }),
+			JSON.stringify({
+				success: true,
+				inserted: totalInserted,
+				current_page: page,
+				has_more: Warehouse.length === PAGE_SIZE,
+				is_complete: Warehouse.length < PAGE_SIZE,
+				warehouses_fetched: warehouses.length,
+			}),
 			{ headers: { "Content-Type": "application/json" } }
 		);
 	} catch (err) {
+		console.error(`${endpoint} error:`, err);
 		return new Response(
 			JSON.stringify({ success: false, error: err.message }),
 			{ status: 500, headers: { "Content-Type": "application/json" } }

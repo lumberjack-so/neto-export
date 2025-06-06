@@ -14,8 +14,8 @@ const PAGE_SIZE = 1000;
 
 const filterData = {
 	Filter: {
-		DatePlacedFrom: "1900-01-01 00:00:00",
-		DatePlacedTo: "2100-01-01 00:00:00",
+		DatePlacedFrom: "2012-01-01 00:00:00",
+		DatePlacedTo: new Date().toISOString().split("T")[0] + " 23:59:59",
 		Page: 0,
 		Limit: PAGE_SIZE,
 		OutputSelector: [

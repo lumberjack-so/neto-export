@@ -10,12 +10,12 @@ import {
 const endpoint = "GetVoucher";
 const table = "voucher";
 const conflictColumn = "voucher_id";
-const CHUNK_DAYS = 30;
+const CHUNK_DAYS = 365;
 
 const filterData = {
 	Filter: {
 		DateAddedFrom: "2012-01-01 00:00:00",
-		DateAddedTo: "2100-01-01 00:00:00",
+		DateAddedTo: new Date().toISOString().split("T")[0] + " 23:59:59",
 		OutputSelector: [
 			"VoucherID",
 			"VoucherCode",

@@ -10,10 +10,11 @@ import {
 const endpoint = "GetSupplier";
 const table = "supplier";
 const conflictColumn = "supplier_id";
+const PAGE_SIZE = 1000;
 
 const filterData = {
 	Filter: {
-		Limit: 10000,
+		Limit: PAGE_SIZE,
 		OutputSelector: [
 			"ID",
 			"SupplierID",
@@ -48,116 +49,75 @@ const filterData = {
 serve(async () => {
 	const supabase = initSupabase();
 
-	const apiKey = Deno.env.get("NETO_API_KEY");
-	console.log("NETO_API_KEY is set:", !!apiKey);
-	console.log("NETO_API_KEY length:", apiKey ? apiKey.length : 0);
+	try {
+		// Get current sync state
+		const { data: syncState, error: syncError } = await supabase
+			.from("sync_state")
+			.select("*")
+			.eq("entity_type", "suppliers")
+			.single();
 
-	if (!apiKey) {
+		if (syncError) {
+			throw new Error(`Failed to get sync state: ${syncError.message}`);
+		}
+
+		let page = syncState?.last_synced_page || 0;
+		let totalInserted = 0;
+		const suppliers = [];
+
+		// Fetch one page of suppliers
+		console.log(`Fetching suppliers page ${page} (limit ${PAGE_SIZE})`);
+		const { Supplier = [] } = await callNetoAPI(endpoint, {
+			Filter: { ...filterData.Filter, Page: page, Limit: PAGE_SIZE },
+		});
+		console.log(`Received ${Supplier.length} suppliers on page ${page}`);
+
+		if (Supplier.length > 0) {
+			const rows = transformData(endpoint, { Supplier });
+			console.log(`Transform yielded ${rows.length} rows on page ${page}`);
+
+			// Deduplicate on supplier_id
+			const unique = rows.filter(
+				(row, index, self) =>
+					index === self.findIndex((r) => r.supplier_id === row.supplier_id)
+			);
+
+			const { count } = await upsertData(
+				supabase,
+				table,
+				conflictColumn,
+				unique
+			);
+			console.log(`Upserted ${count ?? 0} suppliers on page ${page}`);
+			totalInserted += count ?? 0;
+			suppliers.push(...Supplier);
+
+			// Update sync state
+			const isComplete = Supplier.length < PAGE_SIZE;
+			const { error: updateError } = await supabase
+				.from("sync_state")
+				.update({
+					last_synced_page: page + 1,
+					last_synced_date: new Date().toISOString(),
+					is_complete: isComplete,
+					total_records: (syncState?.total_records || 0) + Supplier.length,
+				})
+				.eq("entity_type", "suppliers");
+
+			if (updateError) {
+				throw new Error(`Failed to update sync state: ${updateError.message}`);
+			}
+		}
+
 		return new Response(
 			JSON.stringify({
-				success: false,
-				error: "NETO_API_KEY environment variable is not set",
-				hint: "Set it in Supabase Dashboard > Settings > Edge Functions > Secrets",
+				success: true,
+				inserted: totalInserted,
+				current_page: page,
+				has_more: Supplier.length === PAGE_SIZE,
+				is_complete: Supplier.length < PAGE_SIZE,
+				suppliers_fetched: suppliers.length,
 			}),
-			{ status: 500, headers: { "Content-Type": "application/json" } }
-		);
-	}
-
-	try {
-		// Check if supplier table exists
-		const { error: tableCheckError } = await supabase
-			.from("supplier")
-			.select("supplier_id")
-			.limit(1);
-
-		if (tableCheckError && tableCheckError.code === "42P01") {
-			// Table doesn't exist
-			return new Response(
-				JSON.stringify({
-					success: false,
-					error:
-						"Supplier table does not exist. Please create it first by running the SQL script in sql/create_supplier_table.sql",
-					hint: "Go to Supabase Dashboard > SQL Editor and run the create table script",
-				}),
-				{ status: 500, headers: { "Content-Type": "application/json" } }
-			);
-		}
-
-		const PAGE_SIZE = 1000;
-		let page = 1;
-		let totalInserted = 0;
-
-		// Note: GetSupplier API doesn't support Page parameter properly
-		// We'll fetch all suppliers in one request
-		console.log("Fetching all suppliers...");
-		console.log("Request payload:", JSON.stringify(filterData));
-
-		const response = await callNetoAPI(endpoint, filterData);
-
-		console.log(
-			"Raw API response:",
-			JSON.stringify(response).substring(0, 500)
-		);
-		console.log("Response type:", typeof response);
-		console.log("Response has Supplier?", "Supplier" in response);
-		console.log("Supplier type:", typeof response.Supplier);
-		console.log("Supplier is array?", Array.isArray(response.Supplier));
-
-		const { Supplier = [] } = response;
-
-		// Handle case where Supplier might be an empty string
-		let suppliers = [];
-		if (Array.isArray(Supplier)) {
-			suppliers = Supplier;
-		} else if (Supplier === "" || !Supplier) {
-			console.log("Supplier is empty string or falsy, no suppliers found");
-			suppliers = [];
-		} else {
-			console.log("Unexpected Supplier format:", Supplier);
-			suppliers = [];
-		}
-
-		console.log(`Found ${suppliers.length} suppliers total`);
-
-		if (suppliers.length === 0) {
-			console.log("No suppliers found");
-			return new Response(
-				JSON.stringify({
-					success: true,
-					inserted: 0,
-					message: "No suppliers found in Neto",
-				}),
-				{ headers: { "Content-Type": "application/json" } }
-			);
-		}
-
-		// Log first supplier as sample
-		if (suppliers.length > 0) {
-			console.log("Sample supplier:", JSON.stringify(suppliers[0]));
-		}
-
-		// Transform data
-		const rows = transformData(endpoint, { Supplier: suppliers });
-		console.log(`Transformed ${rows.length} rows`);
-
-		// Deduplicate on supplier_id
-		const unique = rows.filter(
-			(row, index, self) =>
-				index === self.findIndex((r) => r.supplier_id === row.supplier_id)
-		);
-		console.log("all unique suppliers rows-->>>>: ", unique);
-		console.log(`After deduplication: ${unique.length} unique rows`);
-
-		// Upsert to database
-		const { count } = await upsertData(supabase, table, conflictColumn, unique);
-		totalInserted = count || 0;
-
-		console.log(
-			`Processed ${suppliers.length} suppliers, inserted ${totalInserted}`
-		);
-
-		return new Response(
-			JSON.stringify({ success: true, inserted: totalInserted }),
 			{ headers: { "Content-Type": "application/json" } }
 		);
 	} catch (error) {
