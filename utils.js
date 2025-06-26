@@ -1,4 +1,3 @@
-// Shared utility functions for Neto Edge Functions
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const NETO_API_URL = "https://timberbits.com/do/WS/NetoAPI";
@@ -48,7 +47,6 @@ export async function callNetoAPI(action, filterData) {
 	return jsonResponse;
 }
 
-// Transformers per endpoint
 export function transformData(endpoint, data) {
 	console.log(`[${endpoint}] Starting data transformation`);
 	console.log(
@@ -77,6 +75,7 @@ export function transformData(endpoint, data) {
 						date_updated: item.DateUpdated,
 					})) || []
 				);
+
 			case "GetCustomer":
 				return (
 					data.Customer?.map((c) => ({
@@ -89,6 +88,7 @@ export function transformData(endpoint, data) {
 						date_updated: c.DateUpdated,
 					})) || []
 				);
+
 			case "GetOrder":
 				return (
 					data.Order?.map((o) => ({
@@ -100,6 +100,7 @@ export function transformData(endpoint, data) {
 						last_updated: o.LastUpdated,
 					})) || []
 				);
+
 			case "GetPayment":
 				return (
 					data.Payment?.map((p) => ({
@@ -109,6 +110,7 @@ export function transformData(endpoint, data) {
 						date_payment: p.DatePaid,
 					})) || []
 				);
+
 			case "GetWarehouse":
 				return (
 					data.Warehouse?.map((w) => ({
@@ -120,6 +122,7 @@ export function transformData(endpoint, data) {
 						country: w.Country,
 					})) || []
 				);
+
 			case "GetRma":
 				return (
 					data.Rma?.map((r) => ({
@@ -129,6 +132,7 @@ export function transformData(endpoint, data) {
 						order_id: r.OrderID,
 					})) || []
 				);
+
 			case "GetContent": {
 				const normalizeDate = (str) => {
 					if (!str || str === "0000-00-00 00:00:00") return null;
@@ -144,9 +148,12 @@ export function transformData(endpoint, data) {
 					})) || []
 				);
 			}
-			case "GetCategory":
-				const normalizeDate = (str) =>
-					str === "0000-00-00 00:00:00" ? null : str;
+
+			case "GetCategory": {
+				const normalizeDate = (str) => {
+					if (!str || str === "0000-00-00 00:00:00") return null;
+					return str;
+				};
 				return (
 					data.Category?.map((cat) => ({
 						category_id: cat.CategoryID,
@@ -156,6 +163,8 @@ export function transformData(endpoint, data) {
 						date_updated: normalizeDate(cat.DateUpdated),
 					})) || []
 				);
+			}
+
 			case "GetVoucher":
 				console.log("GetVoucher transform - raw data:", JSON.stringify(data));
 				if (!data?.Voucher) {
@@ -172,11 +181,11 @@ export function transformData(endpoint, data) {
 					balance: v.Balance,
 					date_added: v.DateAdded,
 				}));
+
 			case "GetSupplier":
 				console.log("GetSupplier transform - sample data:", data.Supplier?.[0]);
 				return (
 					data.Supplier?.map((s) => {
-						// Helper function to convert empty strings to null
 						const nullIfEmpty = (val) => (val === "" ? null : val);
 
 						return {
@@ -213,6 +222,7 @@ export function transformData(endpoint, data) {
 						};
 					}) || []
 				);
+
 			default:
 				return [];
 		}
@@ -257,4 +267,198 @@ export async function upsertData(supabase, table, conflictColumn, rows) {
 	);
 
 	return { count };
+}
+
+export async function getLastSyncDate(supabase, entityType) {
+	const { data, error } = await supabase
+		.from("sync_log")
+		.select("last_sync_date")
+		.eq("entity_type", entityType)
+		.single();
+
+	if (error) {
+		console.warn(`No sync date found for ${entityType}, using yesterday`);
+		const yesterday = new Date();
+		yesterday.setDate(yesterday.getDate() - 1);
+		return yesterday.toISOString();
+	}
+
+	return data.last_sync_date;
+}
+
+export async function updateLastSyncDate(
+	supabase,
+	entityType,
+	syncDate = null
+) {
+	const newSyncDate = syncDate || new Date().toISOString();
+
+	const { error } = await supabase.from("sync_log").upsert(
+		{
+			entity_type: entityType,
+			last_sync_date: newSyncDate,
+		},
+		{
+			onConflict: "entity_type",
+		}
+	);
+
+	if (error) {
+		throw new Error(
+			`Failed to update sync date for ${entityType}: ${error.message}`
+		);
+	}
+
+	console.log(`📅 Updated sync date for ${entityType}: ${newSyncDate}`);
+}
+
+export function createDateFilter(entityType, lastSyncDate) {
+	const fromDate = new Date(lastSyncDate);
+	fromDate.setHours(fromDate.getHours() - 1);
+
+	const toDate = new Date();
+
+	const formatDate = (date) => {
+		return date.toISOString().replace("T", " ").split(".")[0];
+	};
+
+	const dateFrom = formatDate(fromDate);
+	const dateTo = formatDate(toDate);
+
+	console.log(`📅 Incremental sync from ${dateFrom} to ${dateTo}`);
+
+	switch (entityType) {
+		case "suppliers":
+			return {
+				DateUpdatedFrom: dateFrom,
+				DateUpdatedTo: dateTo,
+			};
+
+		case "items":
+		case "customers":
+			return {
+				DateAddedFrom: dateFrom,
+				DateAddedTo: dateTo,
+				DateUpdatedFrom: dateFrom,
+				DateUpdatedTo: dateTo,
+			};
+
+		case "orders":
+			return {
+				DatePlacedFrom: dateFrom,
+				DatePlacedTo: dateTo,
+			};
+
+		case "payments":
+			return {
+				DatePaidFrom: dateFrom,
+				DatePaidTo: dateTo,
+			};
+
+		case "rmas":
+			return {
+				DateIssuedFrom: dateFrom,
+				DateIssuedTo: dateTo,
+			};
+
+		case "vouchers":
+			return {
+				DateAddedFrom: dateFrom,
+				DateAddedTo: dateTo,
+			};
+
+		case "categories":
+		case "contents":
+		case "warehouses":
+		default:
+			return null;
+	}
+}
+
+export async function syncEntitySince(
+	supabase,
+	entityType,
+	endpoint,
+	table,
+	conflictColumn,
+	outputSelector
+) {
+	console.log(`🚀 Starting incremental sync for ${entityType}`);
+
+	try {
+		const lastSyncDate = await getLastSyncDate(supabase, entityType);
+		console.log(`📅 Last sync: ${lastSyncDate}`);
+
+		const dateFilter = createDateFilter(entityType, lastSyncDate);
+		let filter = {
+			Page: 0,
+			Limit: 1000,
+		};
+
+		if (outputSelector && outputSelector.length > 0) {
+			filter.OutputSelector = outputSelector;
+		}
+
+		if (dateFilter) {
+			filter = { ...filter, ...dateFilter };
+		}
+
+		console.log(`📡 API Filter:`, JSON.stringify(filter, null, 2));
+
+		const response = await callNetoAPI(endpoint, { Filter: filter });
+
+		const dataKey = endpoint.replace("Get", "");
+		const records = response[dataKey] || [];
+
+		console.log(`📊 Received ${records.length} records from ${endpoint}`);
+
+		let recordsSynced = 0;
+
+		if (records.length > 0) {
+			const transformedData = transformData(endpoint, { [dataKey]: records });
+
+			const uniqueData = transformedData.filter(
+				(row, index, self) =>
+					index ===
+					self.findIndex((r) => r[conflictColumn] === row[conflictColumn])
+			);
+
+			console.log(
+				`🔄 Transformed ${transformedData.length} records, ${uniqueData.length} unique`
+			);
+
+			const { count } = await upsertData(
+				supabase,
+				table,
+				conflictColumn,
+				uniqueData
+			);
+			recordsSynced = count || 0;
+
+			console.log(`✅ Synced ${recordsSynced} records to ${table}`);
+		}
+
+		await updateLastSyncDate(supabase, entityType);
+
+		const result = {
+			success: true,
+			entity_type: entityType,
+			records_fetched: records.length,
+			records_synced: recordsSynced,
+			sync_date: new Date().toISOString(),
+		};
+
+		console.log(`✅ Incremental sync completed:`, result);
+		return result;
+	} catch (error) {
+		console.error(`❌ Sync failed for ${entityType}:`, error);
+
+		const result = {
+			success: false,
+			entity_type: entityType,
+			error: error.message,
+		};
+
+		return result;
+	}
 }

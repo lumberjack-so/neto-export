@@ -1,0 +1,16 @@
+{
+	"name": "neto-export",
+	"version": "1.0.0",
+	"description": "Export Neto data to Supabase",
+	"main": "backfill_script.js",
+	"type": "module",
+	"scripts": {
+		"test": "echo \"Error: no test specified\" && exit 1",
+		"backfill": "node backfill_script.js"
+	},
+	"author": "",
+	"license": "ISC",
+	"dependencies": {
+		"@supabase/supabase-js": "^2.50.2"
+	}
+}

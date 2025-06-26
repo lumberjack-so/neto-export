@@ -1,111 +1,109 @@
 // Edge Function: SyncAll -> triggers all Neto endpoint functions sequentially
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
-// Get environment variables
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-const FUNCTIONS_URL = `${SUPABASE_URL}/functions/v1`;
-
-// List of functions with their entity types
-const functions = [
-	{ slug: "GetItem", entity_type: "items" },
-	{ slug: "GetCustomer", entity_type: "customers" },
-	{ slug: "GetOrder", entity_type: "orders" },
-	{ slug: "GetPayment", entity_type: "payments" },
-	{ slug: "GetWarehouse", entity_type: "warehouses" },
-	{ slug: "GetRma", entity_type: "rmas" },
-	{ slug: "GetContent", entity_type: "contents" },
-	{ slug: "GetCategory", entity_type: "categories" },
-	{ slug: "GetVoucher", entity_type: "vouchers" },
-	{ slug: "GetSupplier", entity_type: "suppliers" },
+// List of all edge functions to sync
+const EDGE_FUNCTIONS = [
+	"GetSupplier",
+	"GetItem",
+	"GetCustomer",
+	"GetOrder",
+	"GetPayment",
+	"GetRma",
+	"GetVoucher",
+	"GetCategory",
+	"GetContent",
+	"GetWarehouse",
 ];
 
-async function triggerFunction(fn) {
-	console.log(`Starting sync for ${fn.slug}...`);
+serve(async () => {
+	console.log("🚀 Starting global sync process...");
+
+	const results = [];
+	const startTime = Date.now();
 
 	try {
-		const res = await fetch(`${FUNCTIONS_URL}/${fn.slug}`, {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${SERVICE_KEY}`,
-				"Content-Type": "application/json",
-			},
+		// Call all edge functions in parallel
+		const promises = EDGE_FUNCTIONS.map(async (functionName) => {
+			const url = `${Deno.env.get(
+				"SUPABASE_URL"
+			)}/functions/v1/${functionName}`;
+
+			console.log(`📡 Calling ${functionName}...`);
+
+			try {
+				const response = await fetch(url, {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${Deno.env.get("SUPABASE_ANON_KEY")}`,
+						"Content-Type": "application/json",
+					},
+				});
+
+				const data = await response.json();
+
+				return {
+					function: functionName,
+					success: true,
+					...data,
+				};
+			} catch (error) {
+				console.error(`❌ Error calling ${functionName}:`, error);
+				return {
+					function: functionName,
+					success: false,
+					error: error.message,
+				};
+			}
 		});
 
-		if (!res.ok) {
-			throw new Error(`HTTP error! status: ${res.status}`);
-		}
+		// Wait for all functions to complete
+		const syncResults = await Promise.all(promises);
+		results.push(...syncResults);
 
-		const result = await res.json().catch(() => ({}));
-		console.log(`[${fn.slug}] Result:`, result);
+		const endTime = Date.now();
+		const totalTime = (endTime - startTime) / 1000;
 
-		if (!result.success) {
-			throw new Error(`Failed to sync ${fn.slug}: ${result.error}`);
-		}
+		// Calculate summary stats
+		const successful = results.filter((r) => r.success).length;
+		const failed = results.filter((r) => !r.success).length;
+		const totalRecords = results
+			.filter((r) => r.success && r.records_synced)
+			.reduce((sum, r) => sum + r.records_synced, 0);
 
-		return result;
-	} catch (error) {
-		console.error(`Error syncing ${fn.slug}:`, error);
-		throw error;
-	}
-}
+		console.log(`✅ Global sync completed in ${totalTime}s`);
+		console.log(
+			`📊 Summary: ${successful} successful, ${failed} failed, ${totalRecords} total records`
+		);
 
-serve(async (req) => {
-	try {
-		// Get the entity type from query params
-		const url = new URL(req.url);
-		const entityType = url.searchParams.get("entity_type");
-
-		if (entityType) {
-			// Sync single entity
-			const fn = functions.find((f) => f.entity_type === entityType);
-			if (!fn) {
-				throw new Error(`Invalid entity type: ${entityType}`);
+		return new Response(
+			JSON.stringify({
+				success: true,
+				summary: {
+					total_functions: EDGE_FUNCTIONS.length,
+					successful,
+					failed,
+					total_records: totalRecords,
+					execution_time_seconds: totalTime,
+				},
+				results,
+			}),
+			{
+				headers: { "Content-Type": "application/json" },
 			}
-
-			const result = await triggerFunction(fn);
-
-			return new Response(
-				JSON.stringify({
-					success: true,
-					result,
-					timestamp: new Date().toISOString(),
-				}),
-				{ headers: { "Content-Type": "application/json" } }
-			);
-		} else {
-			// Sync all entities (one page each)
-			const results = {};
-			const errors = {};
-
-			for (const fn of functions) {
-				try {
-					results[fn.slug] = await triggerFunction(fn);
-				} catch (error) {
-					console.error(`Failed to sync ${fn.slug}:`, error);
-					errors[fn.slug] = error.message;
-				}
-			}
-
-			return new Response(
-				JSON.stringify({
-					success: true,
-					results,
-					errors: Object.keys(errors).length > 0 ? errors : undefined,
-					timestamp: new Date().toISOString(),
-				}),
-				{ headers: { "Content-Type": "application/json" } }
-			);
-		}
+		);
 	} catch (error) {
-		console.error("SyncAll error:", error);
+		console.error("❌ Global sync failed:", error);
+
 		return new Response(
 			JSON.stringify({
 				success: false,
 				error: error.message,
-				timestamp: new Date().toISOString(),
+				results,
 			}),
-			{ status: 500, headers: { "Content-Type": "application/json" } }
+			{
+				status: 500,
+				headers: { "Content-Type": "application/json" },
+			}
 		);
 	}
 });
