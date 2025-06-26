@@ -2,8 +2,8 @@ name: Deploy Edge Functions
 
 on:
   push:
-    branches: [ main ]         # deploy on every push to main
-  workflow_dispatch:           # allow manual trigger
+    branches: [main] # deploy on every push to main
+  workflow_dispatch: # allow manual trigger
 
 jobs:
   deploy:
@@ -11,7 +11,7 @@ jobs:
 
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-      PROJECT_REF:            ${{ secrets.PROJECT_REF }}
+      PROJECT_REF: ${{ secrets.PROJECT_REF }}
 
     steps:
       - name: Checkout repo
@@ -21,7 +21,7 @@ jobs:
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: 2.13.3      # or 'latest'
+          version: 2.13.3 # or 'latest'
 
       # OPTIONAL – if you store env vars in Supabase Secrets
       # Uncomment and add your secrets to GitHub and here.
@@ -55,3 +55,15 @@ jobs:
               --project-ref "$PROJECT_REF" \
               --use-api
           done
+
+          # Explicitly deploy global_sync to ensure it's included
+          echo "Preparing function global_sync"
+          dir="supabase/functions/global_sync"
+          mkdir -p "$dir"
+          cp global_sync.js "$dir/index.ts"
+          cp utils.js "$dir/utils.js"
+
+          echo "Deploying global_sync"
+          supabase functions deploy "global_sync" \
+            --project-ref "$PROJECT_REF" \
+            --use-api
