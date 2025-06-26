@@ -1,4 +1,3 @@
-// Edge Function: SyncAll -> triggers all Neto endpoint functions sequentially
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 // List of all edge functions to sync
