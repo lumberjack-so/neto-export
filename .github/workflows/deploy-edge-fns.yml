@@ -38,8 +38,8 @@ jobs:
 
           for file in *.js; do
             fn=$(basename "$file" .js)
-            # Skip shared helpers
-            if [ "$fn" = "sync_utils" ]; then
+            # Skip shared helpers and Node.js scripts (not for edge functions)
+            if [ "$fn" = "sync_utils" ] || [ "$fn" = "backfill_script" ] || [ "$fn" = "test_daily_sync" ] || [ "$fn" = "setup-supplier" ] || [ "$fn" = "deploy-supplier" ]; then
               continue
             fi
 
