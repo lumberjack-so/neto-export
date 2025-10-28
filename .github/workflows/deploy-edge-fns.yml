@@ -39,7 +39,7 @@ jobs:
           for file in *.js; do
             fn=$(basename "$file" .js)
             # Skip shared helpers
-            if [ "$fn" = "utils" ]; then
+            if [ "$fn" = "sync_utils" ]; then
               continue
             fi
 
@@ -48,7 +48,7 @@ jobs:
             mkdir -p "$dir"
             # copy entrypoint and shared helpers
             cp "$file" "$dir/index.ts"
-            cp utils.js "$dir/utils.js"
+            cp sync_utils.js "$dir/sync_utils.js"
 
             echo "Deploying $fn"
             supabase functions deploy "$fn" \
@@ -61,7 +61,7 @@ jobs:
           dir="supabase/functions/global_sync"
           mkdir -p "$dir"
           cp global_sync.js "$dir/index.ts"
-          cp utils.js "$dir/utils.js"
+          cp sync_utils.js "$dir/sync_utils.js"
 
           echo "Deploying global_sync"
           supabase functions deploy "global_sync" \
