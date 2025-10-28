@@ -9,7 +9,7 @@ import {
 	transformData,
 	upsertData,
 	hasMoreDates,
-} from "../sync_utils.js";
+} from "./sync_utils.js";
 
 const endpoint = "GetCategory";
 const table = "category";

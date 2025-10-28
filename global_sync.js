@@ -9,7 +9,7 @@ import {
 	transformData,
 	upsertData,
 	hasMoreDates,
-} from "../sync_utils.js";
+} from "./sync_utils.js";
 
 // Define all entity types and their configurations
 const ENTITY_CONFIGS = [
